@@ -1,8 +1,9 @@
 import fs from 'node:fs'
 import os from 'node:os'
 import path from 'node:path'
-import { spawn } from 'node:child_process'
+import { spawn, type ChildProcessWithoutNullStreams } from 'node:child_process'
 import { app } from 'electron'
+import { stopLocalSpeak, trackSpeakingProc } from './local-tts'
 
 type PiperResult = {
   audio: Buffer | Int16Array | Float32Array | Uint8Array
@@ -13,14 +14,21 @@ type PiperTts = {
   synthesize: (text: string, opts?: { speakerId?: number }) => Promise<PiperResult>
 }
 
-/** Hand-picked brighter/female-leaning speakers from bn_BD google multi-speaker model */
+/** Hand-picked speakers from bn_BD google multi-speaker model */
 export const BANGLA_FEMALE_VOICES = [
   { id: 'bn_f_10', label: 'বাংলা Female A (bright)', speakerId: 10 },
   { id: 'bn_f_13', label: 'বাংলা Female B (soft)', speakerId: 13 },
   { id: 'bn_f_15', label: 'বাংলা Female C', speakerId: 15 },
   { id: 'bn_f_3', label: 'বাংলা Female D', speakerId: 3 },
-  { id: 'bn_f_0', label: 'বাংলা Female E', speakerId: 0 },
 ] as const
+
+export const BANGLA_MALE_VOICES = [
+  { id: 'bn_m_0', label: 'বাংলা Male A (Jarvis BN)', speakerId: 0 },
+  { id: 'bn_m_3', label: 'বাংলা Male B', speakerId: 3 },
+  { id: 'bn_m_1', label: 'বাংলা Male C', speakerId: 1 },
+] as const
+
+export const BANGLA_VOICES = [...BANGLA_MALE_VOICES, ...BANGLA_FEMALE_VOICES] as const
 
 let piperPromise: Promise<PiperTts> | null = null
 
@@ -106,8 +114,11 @@ function writeWav(int16: Int16Array, sampleRate: number): Buffer {
 }
 
 export function resolveBanglaSpeakerId(voiceId?: string): number {
-  const found = BANGLA_FEMALE_VOICES.find((v) => v.id === voiceId)
-  return found?.speakerId ?? 10
+  const found = BANGLA_VOICES.find((v) => v.id === voiceId)
+  if (found) return found.speakerId
+  if (voiceId?.startsWith('bn_m_')) return 0
+  // Default Piper female = bn_f_10 (clearest free neural BN female we ship)
+  return 10
 }
 
 function playWavFile(filePath: string, rate = 1): Promise<void> {
@@ -127,9 +138,11 @@ function playWavFile(filePath: string, rate = 1): Promise<void> {
               { stdio: 'ignore', windowsHide: true },
             )
           : spawn('aplay', [filePath], { stdio: 'ignore' })
+    trackSpeakingProc(child as ChildProcessWithoutNullStreams)
     child.on('error', reject)
-    child.on('exit', (code) => {
-      if (code) reject(new Error(`audio play exited ${code}`))
+    child.on('exit', (code, signal) => {
+      if (signal) reject(new Error(`audio play killed (${signal})`))
+      else if (code) reject(new Error(`audio play exited ${code}`))
       else resolve()
     })
   })
@@ -147,22 +160,50 @@ export async function speakBanglaPiper(options: {
   try {
     const tts = await getPiper()
     const speakerId = resolveBanglaSpeakerId(options.voiceId)
-    // pipertts accepts speakerId; some builds use speaker_id — try both via object spread
-    const { audio, sampleRate } = await tts.synthesize(text, {
+    // Map UI rate → Piper lengthScale (>1 slower/clearer). Do NOT abuse afplay -r as pitch —
+    // that chirps consonants and makes Bangla sound garbled.
+    const rate = options.rate ?? 1
+    const lengthScale = Math.max(0.85, Math.min(1.35, 1 / rate))
+    const result = await tts.synthesize(text, {
       speakerId,
-      speaker_id: speakerId,
-    } as { speakerId?: number })
-    const pcm = toInt16(audio)
-    const wav = writeWav(pcm, sampleRate || 22050)
+      // Clearer Bangla: slightly slower, less stochastic noise than model defaults
+      lengthScale,
+      noiseScale: 0.45,
+      noiseWScale: 0.6,
+      sentenceSilence: 0.25,
+      normalizeAudio: true,
+      outputFormat: 'wav',
+    } as {
+      speakerId?: number
+      lengthScale?: number
+      noiseScale?: number
+      noiseWScale?: number
+      sentenceSilence?: number
+      normalizeAudio?: boolean
+      outputFormat?: string
+    })
+
     const tmp = path.join(os.tmpdir(), `aria-bn-${Date.now()}.wav`)
-    fs.writeFileSync(tmp, wav)
-    // Slightly higher playback rate → brighter/female-leaning timbre
-    const playRate = (options.rate ?? 1) * (options.pitch ?? 1.08)
-    await playWavFile(tmp, playRate)
+    // pipertts default audio is already a WAV Buffer — do NOT re-wrap as PCM (that garbling bug)
+    const raw = result.audio
+    if (Buffer.isBuffer(raw) && raw.length >= 12 && raw.toString('ascii', 0, 4) === 'RIFF') {
+      fs.writeFileSync(tmp, raw)
+    } else if (raw instanceof Uint8Array && raw.byteLength >= 12) {
+      const view = Buffer.from(raw.buffer, raw.byteOffset, raw.byteLength)
+      if (view.toString('ascii', 0, 4) === 'RIFF') fs.writeFileSync(tmp, view)
+      else fs.writeFileSync(tmp, writeWav(toInt16(raw), result.sampleRate || 22050))
+    } else {
+      fs.writeFileSync(tmp, writeWav(toInt16(raw), result.sampleRate || 22050))
+    }
+
+    await stopLocalSpeak()
+    // Play at native speed (1.0) — prosody already applied via lengthScale
+    await playWavFile(tmp, 1)
     fs.promises.unlink(tmp).catch(() => undefined)
     return { ok: true }
   } catch (error) {
     const message = error instanceof Error ? error.message : String(error)
+    console.error('[piper-bn] speak failed:', message)
     return { ok: false, message }
   }
 }

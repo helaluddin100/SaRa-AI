@@ -17,7 +17,12 @@ export type AppSettings = {
   model: string
   voiceEnabled: boolean
   userName: string
+  /** Preset: jarvis (male default) | aria (female) */
   voiceName: string
+  /** Optional English override (kokoro id or say:Daniel) */
+  voiceNameEn: string
+  /** Optional Bangla override (piya | bn_m_* | bn_f_*) */
+  voiceNameBn: string
   /** name -> phone (E.164 without + preferred, e.g. 88017...) */
   whatsappContacts: Record<string, string>
   gmailUser: string
@@ -53,7 +58,9 @@ const defaults: AppData = {
     model: 'gemini-3.8-flash',
     voiceEnabled: true,
     userName: '',
-    voiceName: 'bn_f_10',
+    voiceName: 'aria',
+    voiceNameEn: '',
+    voiceNameBn: '',
     whatsappContacts: {},
     gmailUser: '',
     gmailAppPassword: '',
@@ -104,13 +111,16 @@ export function getSettings(): AppSettings {
 
   let voiceName = raw.voiceName || defaults.settings.voiceName
   if (LEGACY_VOICE_NAMES.has(voiceName)) {
-    voiceName = defaults.settings.voiceName
-  } else if (
-    !voiceName.startsWith('bn_f_') &&
-    !voiceName.startsWith('af_') &&
-    !voiceName.startsWith('bf_')
-  ) {
-    voiceName = defaults.settings.voiceName
+    voiceName = 'aria'
+  } else if (voiceName === 'piya' || voiceName.startsWith('bn_f_')) {
+    // Old female-only default → map to Aria preset
+    voiceName = 'aria'
+  } else if (voiceName.startsWith('af_') || voiceName.startsWith('bf_')) {
+    voiceName = 'aria'
+  } else if (voiceName.startsWith('am_') || voiceName.startsWith('bm_') || voiceName === 'Daniel') {
+    voiceName = 'jarvis'
+  } else if (voiceName !== 'jarvis' && voiceName !== 'aria') {
+    voiceName = 'aria'
   }
 
   return {
@@ -119,6 +129,8 @@ export function getSettings(): AppSettings {
     voiceEnabled: raw.voiceEnabled ?? true,
     userName: raw.userName ?? '',
     voiceName,
+    voiceNameEn: raw.voiceNameEn || '',
+    voiceNameBn: raw.voiceNameBn || '',
     whatsappContacts: raw.whatsappContacts || {},
     gmailUser: raw.gmailUser || '',
     gmailAppPassword: raw.gmailAppPassword || '',

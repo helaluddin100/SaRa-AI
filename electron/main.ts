@@ -10,10 +10,16 @@ import {
   sendWhatsAppMessage,
 } from './integrations'
 import { generateMapsLeads } from './leads'
-import { speakWithKokoro, textMostlyBangla, warmupKokoro } from './kokoro-tts'
+import {
+  KOKORO_VOICES,
+  speakWithKokoro,
+  textMostlyBangla,
+  warmupKokoro,
+} from './kokoro-tts'
 import { listLocalVoices, speakLocal, stopLocalSpeak } from './local-tts'
 import { getLocalDateTime, getLocalWeather } from './local-context'
-import { BANGLA_FEMALE_VOICES, speakBanglaPiper, warmupPiperBangla } from './piper-bangla'
+import { speakBanglaEdge } from './edge-bangla'
+import { BANGLA_VOICES, speakBanglaPiper, warmupPiperBangla } from './piper-bangla'
 import { closeApp, getSystemInfo, listKnownApps, openApp, openUrl } from './pc-control'
 import {
   cancelTask,
@@ -223,6 +229,8 @@ function registerIpc() {
     return result
   })
 
+  let ttsGeneration = 0
+
   ipcMain.handle('tts:listVoices', () => listLocalVoices())
   ipcMain.handle(
     'tts:speak',
@@ -233,26 +241,86 @@ function registerIpc() {
         voiceId?: string
         rate?: number
         pitch?: number
-        engine?: 'auto' | 'kokoro' | 'piper-bn' | 'system'
+        engine?: 'auto' | 'kokoro' | 'piper-bn' | 'edge-bn' | 'system'
       },
     ) => {
       const engine = payload.engine || 'auto'
-      const banglaVoice = Boolean(payload.voiceId?.startsWith('bn_f_'))
+      const banglaVoice = Boolean(
+        payload.voiceId?.startsWith('bn_f_') ||
+          payload.voiceId?.startsWith('bn_m_') ||
+          payload.voiceId?.startsWith('bn-BD-') ||
+          payload.voiceId?.startsWith('bn-IN-'),
+      )
       const useBangla =
         engine === 'piper-bn' ||
+        engine === 'edge-bn' ||
         banglaVoice ||
         (engine === 'auto' && textMostlyBangla(payload.text))
 
+      const generation = ++ttsGeneration
+      console.log(
+        `[tts] engine=${engine} voice=${payload.voiceId || '-'} bangla=${useBangla} chars=${payload.text?.length || 0} gen=${generation}`,
+      )
+
+      const superseded = () => generation !== ttsGeneration
+
       if (useBangla) {
-        const bn = await speakBanglaPiper({
-          text: payload.text,
-          voiceId: payload.voiceId,
-          rate: payload.rate,
-          pitch: payload.pitch ?? 1.08,
-        })
-        if (bn.ok || engine === 'piper-bn' || banglaVoice) return bn
-        // fallback Piya
-        return speakLocal({ ...payload, voiceId: 'Piya' })
+        // Explicit offline Piya only — never steal the Edge neural path
+        if (/^(piya|Piya)$/i.test(payload.voiceId || '') && engine === 'system') {
+          const local = await speakLocal({
+            ...payload,
+            voiceId: 'Piya',
+            rate: Math.min(payload.rate ?? 0.95, 0.95),
+          })
+          console.log(`[tts] Piya ok=${local.ok}`, local.message || '')
+          return local
+        }
+
+        // Free clear neural Bangla (Edge) — this is the app Bangla voice
+        if (engine === 'edge-bn' || engine === 'auto' || payload.voiceId?.startsWith('bn-')) {
+          const edge = await speakBanglaEdge({
+            text: payload.text,
+            voiceId: payload.voiceId,
+            rate: payload.rate,
+            preferMale: !/Nabanita|Tanishaa|bn_f_/i.test(payload.voiceId || ''),
+            isCurrent: () => generation === ttsGeneration,
+          })
+          if (edge.ok) {
+            console.log('[tts] edge-bn ok')
+            return edge
+          }
+          // A newer reply stopped this one — do NOT fall back to Piya (that was the "other voice")
+          if (edge.interrupted || superseded()) {
+            console.log('[tts] edge-bn interrupted, skip Piya fallback')
+            return { ok: true, interrupted: true }
+          }
+          console.warn('[tts] edge-bn failed, trying Piya:', edge.message)
+          if (superseded()) return { ok: true, interrupted: true }
+          const piya = await speakLocal({ ...payload, voiceId: 'Piya', rate: 0.92 })
+          if (piya.ok) return piya
+        }
+
+        if (engine === 'piper-bn' || payload.voiceId?.startsWith('bn_')) {
+          const bn = await speakBanglaPiper({
+            text: payload.text,
+            voiceId: payload.voiceId || 'bn_f_10',
+            rate: payload.rate,
+            pitch: 1,
+          })
+          if (bn.ok) {
+            console.log('[tts] piper-bn ok')
+            return bn
+          }
+          console.warn('[tts] piper-bn failed, fallback Piya:', bn.message)
+        }
+
+        return speakLocal({ ...payload, voiceId: 'Piya', rate: 0.92 })
+      }
+
+      if (engine === 'system') {
+        const local = await speakLocal(payload)
+        console.log(`[tts] system ok=${local.ok}`, local.message || '')
+        return local
       }
 
       if (engine === 'kokoro' || engine === 'auto') {
@@ -262,31 +330,45 @@ function registerIpc() {
           speed: payload.rate ?? 1,
           pitch: payload.pitch ?? 1.08,
         })
-        if (neural.ok || engine === 'kokoro') return neural
+        if (neural.ok) {
+          console.log('[tts] kokoro ok')
+          return neural
+        }
+        console.warn('[tts] kokoro failed, fallback system:', neural.message)
       }
 
-      return speakLocal(payload)
+      const fallbackVoice =
+        payload.voiceId?.startsWith('bm_') || payload.voiceId === 'Daniel'
+          ? 'Daniel'
+          : payload.voiceId?.startsWith('af_') ||
+              payload.voiceId?.startsWith('bf_') ||
+              /heart|bella|emma|isabella|samantha/i.test(payload.voiceId || '')
+            ? 'Samantha'
+            : 'Daniel'
+      const local = await speakLocal({ ...payload, voiceId: fallbackVoice })
+      console.log(`[tts] fallback ${fallbackVoice} ok=${local.ok}`, local.message || '')
+      return local
     },
   )
-  ipcMain.handle('tts:stop', () => {
-    stopLocalSpeak()
+  ipcMain.handle('tts:stop', async () => {
+    await stopLocalSpeak()
     return true
   })
-  ipcMain.handle('tts:kokoroVoices', () => {
-    return [
-      { id: 'af_heart', label: 'Heart — natural US female', engine: 'kokoro' },
-      { id: 'af_bella', label: 'Bella — warm US female', engine: 'kokoro' },
-      { id: 'af_nicole', label: 'Nicole — clear US female', engine: 'kokoro' },
-      { id: 'af_sarah', label: 'Sarah — soft US female', engine: 'kokoro' },
-      { id: 'bf_emma', label: 'Emma — British female', engine: 'kokoro' },
-    ]
-  })
+  ipcMain.handle('tts:kokoroVoices', () =>
+    KOKORO_VOICES.map((v) => ({
+      id: v.id,
+      label: v.label,
+      engine: 'kokoro',
+      gender: v.id.includes('m_') || v.id.startsWith('am_') || v.id.startsWith('bm_') ? 'male' : 'female',
+    })),
+  )
   ipcMain.handle('tts:banglaVoices', () =>
-    BANGLA_FEMALE_VOICES.map((v) => ({
+    BANGLA_VOICES.map((v) => ({
       id: v.id,
       label: v.label,
       engine: 'piper-bn',
       speakerId: v.speakerId,
+      gender: v.id.startsWith('bn_m_') ? 'male' : 'female',
     })),
   )
 }

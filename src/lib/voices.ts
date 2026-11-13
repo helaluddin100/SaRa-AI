@@ -21,12 +21,13 @@ export function inferVoiceStyle(text: string): string {
 /** Map emotional style → local TTS prosody (no cloud). */
 export function styleToProsody(style?: string): { rate: number; pitch: number } {
   const s = (style || '').toLowerCase()
-  if (/apolog|gentle|soft|sad|দুঃখ|care/.test(s)) return { rate: 0.9, pitch: 1.05 }
-  if (/cheer|happy|lively|excit|দারুণ/.test(s)) return { rate: 1.12, pitch: 1.15 }
-  if (/serious|calm|reassur|warning/.test(s)) return { rate: 0.95, pitch: 0.95 }
-  if (/playful|teas|joke/.test(s)) return { rate: 1.08, pitch: 1.2 }
-  if (/affection|intimate|warm/.test(s)) return { rate: 0.96, pitch: 1.1 }
-  return { rate: 1.0, pitch: 1.08 }
+  // Keep Bangla-friendly rates near 1.0 — extreme pitch/rate makes BN sound muddy
+  if (/apolog|gentle|soft|sad|দুঃখ|care/.test(s)) return { rate: 0.92, pitch: 1 }
+  if (/cheer|happy|lively|excit|দারুণ/.test(s)) return { rate: 1.05, pitch: 1.02 }
+  if (/serious|calm|reassur|warning/.test(s)) return { rate: 0.95, pitch: 1 }
+  if (/playful|teas|joke/.test(s)) return { rate: 1.04, pitch: 1.03 }
+  if (/affection|intimate|warm/.test(s)) return { rate: 0.96, pitch: 1.02 }
+  return { rate: 0.98, pitch: 1 }
 }
 
 export function textLooksBangla(text: string): boolean {

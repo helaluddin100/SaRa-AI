@@ -21,6 +21,8 @@ type Settings = {
   voiceEnabled: boolean
   userName: string
   voiceName: string
+  voiceNameEn: string
+  voiceNameBn: string
   whatsappContacts: Record<string, string>
   gmailUser: string
   gmailAppPassword: string
@@ -209,6 +211,8 @@ export default function App() {
           text,
           enabled: true,
           voiceName: s.voiceName,
+          voiceNameEn: s.voiceNameEn,
+          voiceNameBn: s.voiceNameBn,
           voiceStyle: ok ? 'warm satisfied update' : 'gentle apologetic',
         }).finally(() => setStatus('idle'))
       }
@@ -330,7 +334,7 @@ export default function App() {
     setLastBrief('')
     setRoutingLabel('Aria…')
     setActiveAgentId('aria')
-    stopSpeaking()
+    void stopSpeaking()
     // Do NOT request screen permission for chat / date / weather — only specialists need it
 
     const userMsg: UiMessage = {
@@ -385,12 +389,21 @@ export default function App() {
 
       if (settings.voiceEnabled) {
         setStatus('speaking')
-        await speak({
-          text: reply.text,
-          enabled: true,
-          voiceName: settings.voiceName,
-          voiceStyle: reply.voiceStyle || inferVoiceStyle(reply.text),
-        })
+        try {
+          await speak({
+            text: reply.text,
+            enabled: true,
+            voiceName: settings.voiceName,
+            voiceNameEn: settings.voiceNameEn,
+            voiceNameBn: settings.voiceNameBn,
+            voiceStyle: reply.voiceStyle || inferVoiceStyle(reply.text),
+          })
+        } catch (speakErr) {
+          console.error('[speak]', speakErr)
+          setError(
+            `ভয়েস প্লে ব্যর্থ: ${speakErr instanceof Error ? speakErr.message : String(speakErr)}`,
+          )
+        }
       }
     } catch (err) {
       const message = err instanceof Error ? err.message : String(err)
@@ -473,7 +486,7 @@ export default function App() {
     voiceChatRef.current = false
     setVoiceChat(false)
     busyRef.current = false
-    stopSpeaking()
+    void stopSpeaking()
     if (listeningRef.current && micSessionRef.current) {
       listeningRef.current = false
       void micSessionRef.current.stop().catch(() => undefined)
@@ -505,6 +518,24 @@ export default function App() {
       <div className="titlebar">
         <div className="brand">Jarvis Desktop · Gen 0.1</div>
         <div className="actions">
+          <label className="voice-pick">
+            Voice
+            <select
+              value={settings.voiceName === 'jarvis' ? 'jarvis' : 'aria'}
+              onChange={(e) => {
+                const voiceName = e.target.value
+                void saveSettings({
+                  ...settings,
+                  voiceName,
+                  voiceNameEn: '',
+                  voiceNameBn: '',
+                })
+              }}
+            >
+              <option value="aria">Female</option>
+              <option value="jarvis">Male</option>
+            </select>
+          </label>
           <button className="icon-btn" type="button" onClick={() => void clearChat()}>
             Clear
           </button>
@@ -633,7 +664,11 @@ export default function App() {
       </div>
 
       <div className="footer">
-        <span>Aria · Bangla female neural (local) · Mic + PC control</span>
+        <span>
+          {settings.voiceName === 'jarvis'
+            ? 'Male · Pradeep (বাংলা) · Daniel (EN)'
+            : 'Female · Nabanita (বাংলা) · Samantha (EN)'}
+        </span>
         <span>Auth later · Mac + Windows</span>
       </div>
 

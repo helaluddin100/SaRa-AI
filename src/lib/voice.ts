@@ -1,52 +1,80 @@
+import { resolveVoiceRef, type VoiceRef } from './voiceCatalog'
 import { styleToProsody, textLooksBangla } from './voices'
 
-export function stopSpeaking() {
+export async function stopSpeaking() {
   if ('speechSynthesis' in window) window.speechSynthesis.cancel()
-  void window.jarvis?.stopLocalSpeak?.()
+  try {
+    await window.jarvis?.stopLocalSpeak?.()
+  } catch {
+    // ignore
+  }
+}
+
+export type SpeakOptions = {
+  text: string
+  enabled?: boolean
+  /** Preset: jarvis | aria — or legacy single voice id */
+  voiceName?: string
+  voiceNameEn?: string
+  voiceNameBn?: string
+  voiceStyle?: string
+}
+
+function fallbackFor(plan: VoiceRef, bangla: boolean): VoiceRef {
+  if (bangla) {
+    if (plan.engine === 'edge-bn') {
+      return { engine: 'system', voiceId: 'Piya', pitchBoost: 1 }
+    }
+    if (plan.engine === 'system' || plan.voiceId === 'Piya' || plan.voiceId === 'piya') {
+      return { engine: 'edge-bn', voiceId: 'bn-BD-NabanitaNeural', pitchBoost: 1 }
+    }
+    return { engine: 'system', voiceId: 'Piya', pitchBoost: 1 }
+  }
+  if (plan.voiceId.startsWith('bm_') || plan.voiceId === 'Daniel') {
+    return { engine: 'system', voiceId: 'Daniel', pitchBoost: 1 }
+  }
+  return { engine: 'system', voiceId: 'Samantha', pitchBoost: 1.05 }
 }
 
 /**
- * Local TTS only:
- * - বাংলা → Piper Bangla female neural (bn_f_*)
- * - English → Kokoro female neural (af_*)
+ * Local TTS with Jarvis (male) / Aria (female) presets.
+ * English + Bangla resolve to different system/neural voices.
  */
-export async function speak(options: {
-  text: string
-  enabled?: boolean
-  voiceName?: string
-  voiceStyle?: string
-}): Promise<void> {
-  const { text, enabled = true, voiceName, voiceStyle } = options
+export async function speak(options: SpeakOptions): Promise<void> {
+  const { text, enabled = true, voiceName, voiceNameEn, voiceNameBn, voiceStyle } = options
   if (!enabled || !text.trim()) return
 
-  stopSpeaking()
+  await stopSpeaking()
   const { rate, pitch } = styleToProsody(voiceStyle)
-  const banglaPreferred =
-    textLooksBangla(text) || Boolean(voiceName?.startsWith('bn_f_')) || voiceName === 'auto-bn'
-
-  if (banglaPreferred) {
-    const result = await window.jarvis.speakLocal({
-      text,
-      voiceId: voiceName?.startsWith('bn_f_') ? voiceName : 'bn_f_10',
-      rate,
-      pitch,
-      engine: 'piper-bn',
-    })
-    if (result.ok) return
-    // fallback system Piya (macOS Bangla female)
-    await window.jarvis.speakLocal({ text, voiceId: 'Piya', rate, pitch, engine: 'system' })
-    return
-  }
+  const bangla = textLooksBangla(text)
+  const plan = resolveVoiceRef(bangla, {
+    preset: voiceName,
+    voiceNameEn,
+    voiceNameBn,
+  })
+  const finalPitch = pitch * (plan.pitchBoost ?? 1)
 
   const result = await window.jarvis.speakLocal({
     text,
-    voiceId: voiceName?.startsWith('af_') || voiceName?.startsWith('bf_') ? voiceName : 'af_heart',
+    voiceId: plan.voiceId,
     rate,
-    pitch,
-    engine: 'kokoro',
+    pitch: finalPitch,
+    engine: plan.engine,
   })
-  if (!result.ok) {
-    await window.jarvis.speakLocal({ text, voiceId: 'Samantha', rate, pitch, engine: 'system' })
+  if (result?.ok || result?.interrupted) return
+  // Interrupted Edge playback must not switch to Piya — that was the mismatched voice
+  if (result?.message && /killed|SIGTERM|interrupted/i.test(result.message)) return
+
+  const fb = fallbackFor(plan, bangla)
+  const second = await window.jarvis.speakLocal({
+    text,
+    voiceId: fb.voiceId,
+    rate,
+    pitch: pitch * (fb.pitchBoost ?? 1),
+    engine: fb.engine,
+  })
+  if (!second?.ok) {
+    console.error('[speak] TTS failed', result?.message || second?.message)
   }
 }
 

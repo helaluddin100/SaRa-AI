@@ -6,6 +6,8 @@ export type JarvisSettings = {
   voiceEnabled: boolean
   userName: string
   voiceName: string
+  voiceNameEn: string
+  voiceNameBn: string
   whatsappContacts: Record<string, string>
   gmailUser: string
   gmailAppPassword: string
@@ -69,8 +71,8 @@ export type JarvisAPI = {
     voiceId?: string
     rate?: number
     pitch?: number
-    engine?: 'auto' | 'kokoro' | 'piper-bn' | 'system'
-  }) => Promise<{ ok: boolean; message?: string }>
+    engine?: 'auto' | 'kokoro' | 'piper-bn' | 'edge-bn' | 'system'
+  }) => Promise<{ ok: boolean; message?: string; interrupted?: boolean }>
   stopLocalSpeak: () => Promise<boolean>
   listKokoroVoices: () => Promise<Array<{ id: string; label: string; engine: string }>>
   listBanglaVoices: () => Promise<

@@ -1,7 +1,8 @@
 import fs from 'node:fs'
 import os from 'node:os'
 import path from 'node:path'
-import { spawn } from 'node:child_process'
+import { spawn, type ChildProcessWithoutNullStreams } from 'node:child_process'
+import { stopLocalSpeak, trackSpeakingProc } from './local-tts'
 
 type KokoroAudio = {
   audio: Float32Array | number[]
@@ -26,6 +27,17 @@ export const KOKORO_FEMALE_VOICES = [
   { id: 'bf_emma', label: 'Emma — British female' },
   { id: 'bf_isabella', label: 'Isabella — British female' },
 ] as const
+
+export const KOKORO_MALE_VOICES = [
+  { id: 'bm_daniel', label: 'Jarvis / Daniel — British male' },
+  { id: 'bm_george', label: 'George — British male' },
+  { id: 'bm_lewis', label: 'Lewis — British male' },
+  { id: 'am_michael', label: 'Michael — US male' },
+  { id: 'am_fenrir', label: 'Fenrir — deep US male' },
+  { id: 'am_puck', label: 'Puck — bright US male' },
+] as const
+
+export const KOKORO_VOICES = [...KOKORO_MALE_VOICES, ...KOKORO_FEMALE_VOICES] as const
 
 let ttsPromise: Promise<KokoroInstance> | null = null
 let ready = false
@@ -104,14 +116,21 @@ export async function speakWithKokoro(options: {
 
   try {
     const tts = await getTts()
-    const voice = options.voiceId && KOKORO_FEMALE_VOICES.some((v) => v.id === options.voiceId)
+    const voice = options.voiceId && KOKORO_VOICES.some((v) => v.id === options.voiceId)
       ? options.voiceId
-      : 'af_heart'
+      : 'bm_daniel'
 
-    const result = await tts.generate(text, {
+    const generatePromise = tts.generate(text, {
       voice,
       speed: options.speed ?? 1,
     })
+    const timeoutMs = Math.min(45000, 8000 + text.length * 40)
+    const result = await Promise.race([
+      generatePromise,
+      new Promise<never>((_, reject) =>
+        setTimeout(() => reject(new Error(`kokoro generate timeout ${timeoutMs}ms`)), timeoutMs),
+      ),
+    ])
 
     const raw = result.audio
     const samples =
@@ -122,11 +141,13 @@ export async function speakWithKokoro(options: {
     fs.writeFileSync(tmp, wav)
 
     const playRate = Math.max(0.85, Math.min(1.25, options.pitch ?? 1.06))
+    await stopLocalSpeak()
     await playWavFile(tmp, playRate)
     fs.promises.unlink(tmp).catch(() => undefined)
     return { ok: true }
   } catch (error) {
     const message = error instanceof Error ? error.message : String(error)
+    console.error('[kokoro] speak failed:', message)
     return { ok: false, message }
   }
 }
@@ -150,9 +171,11 @@ function playWavFile(filePath: string, rate = 1): Promise<void> {
             )
           : spawn('aplay', [filePath], { stdio: 'ignore' })
 
+    trackSpeakingProc(child as ChildProcessWithoutNullStreams)
     child.on('error', reject)
-    child.on('exit', (code) => {
-      if (code && code !== 0) reject(new Error(`audio play exited ${code}`))
+    child.on('exit', (code, signal) => {
+      if (signal) reject(new Error(`audio play killed (${signal})`))
+      else if (code && code !== 0) reject(new Error(`audio play exited ${code}`))
       else resolve()
     })
   })

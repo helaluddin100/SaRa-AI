@@ -1,4 +1,10 @@
 import { useEffect, useState } from 'react'
+import {
+  BANGLA_VOICES,
+  ENGLISH_VOICES,
+  VOICE_PRESETS,
+  resolveVoiceRef,
+} from '../lib/voiceCatalog'
 
 type Settings = {
   geminiApiKey: string
@@ -6,6 +12,8 @@ type Settings = {
   voiceEnabled: boolean
   userName: string
   voiceName: string
+  voiceNameEn: string
+  voiceNameBn: string
   whatsappContacts: Record<string, string>
   gmailUser: string
   gmailAppPassword: string
@@ -40,15 +48,20 @@ function textToContacts(text: string): Record<string, string> {
 }
 
 export function SettingsModal({ initial, onClose, onSave }: Props) {
-  const [form, setForm] = useState(initial)
+  const [form, setForm] = useState({
+    ...initial,
+    voiceName: initial.voiceName === 'jarvis' || initial.voiceName === 'aria' ? initial.voiceName : 'aria',
+    voiceNameEn: initial.voiceNameEn || '',
+    voiceNameBn: initial.voiceNameBn || '',
+  })
   const [contactsText, setContactsText] = useState(() => contactsToText(initial.whatsappContacts))
   const [saving, setSaving] = useState(false)
-  const [banglaVoices, setBanglaVoices] = useState<Array<{ id: string; label: string }>>([])
-  const [englishVoices, setEnglishVoices] = useState<Array<{ id: string; label: string }>>([])
+  const [previewLang, setPreviewLang] = useState<'en' | 'bn'>('en')
 
   useEffect(() => {
-    void window.jarvis.listBanglaVoices().then(setBanglaVoices)
-    void window.jarvis.listKokoroVoices().then(setEnglishVoices)
+    // warm lists (optional — catalog is local; IPC still available)
+    void window.jarvis.listBanglaVoices().catch(() => undefined)
+    void window.jarvis.listKokoroVoices().catch(() => undefined)
   }, [])
 
   async function handleSave() {
@@ -65,14 +78,21 @@ export function SettingsModal({ initial, onClose, onSave }: Props) {
   }
 
   async function previewVoice() {
-    const isBn = form.voiceName.startsWith('bn_f_')
+    const sample =
+      previewLang === 'bn'
+        ? 'হ্যালো স্যার, আমি জার্ভিস। সব সিস্টেম অপারেশনাল।'
+        : 'Good evening sir. I am Jarvis. All systems are operational.'
+    const plan = resolveVoiceRef(previewLang === 'bn', {
+      preset: form.voiceName,
+      voiceNameEn: form.voiceNameEn,
+      voiceNameBn: form.voiceNameBn,
+    })
     await window.jarvis.speakLocal({
-      text: isBn
-        ? 'হ্যালো, আমি আরিয়া। এটা তোমার লোকাল বাংলা ফিমেল ভয়েস।'
-        : 'Hello, I am Aria. This is the local English neural voice.',
-      voiceId: form.voiceName,
+      text: sample,
+      voiceId: plan.voiceId,
       rate: 1,
-      engine: isBn ? 'piper-bn' : 'kokoro',
+      pitch: plan.pitchBoost ?? 1,
+      engine: plan.engine,
     })
   }
 
@@ -81,8 +101,8 @@ export function SettingsModal({ initial, onClose, onSave }: Props) {
       <div className="settings-panel settings-panel-wide" onClick={(e) => e.stopPropagation()}>
         <h2>Settings</h2>
         <p>
-          বাংলা উত্তর <b>Piper Bangla female</b> (লোকাল)। WhatsApp / Gmail / Facebook Page নিচে সেট করো — তারপর voice
-          দিয়ে বললে Aria টুল চালাবে।
+          ইংরেজি: <b>Daniel</b>। বাংলা: <b>Edge neural Pradeep/Nabanita</b> (ফ্রি, পরিষ্কার) — অফলাইনে Piya
+          fallback।
         </p>
 
         <div className="field">
@@ -126,80 +146,106 @@ export function SettingsModal({ initial, onClose, onSave }: Props) {
           />
         </div>
 
+        <h3 className="settings-section">Voice persona</h3>
         <div className="field">
-          <label>বাংলা Female voice (recommended)</label>
+          <label>Default persona</label>
           <select
-            value={form.voiceName.startsWith('bn_f_') ? form.voiceName : 'bn_f_10'}
-            onChange={(e) => setForm((s) => ({ ...s, voiceName: e.target.value }))}
+            value={form.voiceName}
+            onChange={(e) =>
+              setForm((s) => ({
+                ...s,
+                voiceName: e.target.value,
+                voiceNameEn: '',
+                voiceNameBn: '',
+              }))
+            }
           >
-            {(banglaVoices.length
-              ? banglaVoices
-              : [{ id: 'bn_f_10', label: 'বাংলা Female A (bright)' }]
-            ).map((v) => (
+            {Object.values(VOICE_PRESETS).map((p) => (
+              <option key={p.id} value={p.id}>
+                {p.label}
+                {p.id === 'aria' ? ' ★ default' : ''}
+              </option>
+            ))}
+          </select>
+          <p className="settings-hint" style={{ marginTop: 6 }}>
+            ডিফল্ট = <b>Female (Nabanita)</b>। Male = Pradeep। পারসোনা বদলালে আগের override মুছে যায়।
+          </p>
+        </div>
+
+        <div className="field">
+          <label>English voice override (optional)</label>
+          <select
+            value={form.voiceNameEn}
+            onChange={(e) => setForm((s) => ({ ...s, voiceNameEn: e.target.value }))}
+          >
+            <option value="">— persona default —</option>
+            {ENGLISH_VOICES.map((v) => (
               <option key={v.id} value={v.id}>
-                {v.label}
+                [{v.gender}] {v.label}
               </option>
             ))}
           </select>
         </div>
 
         <div className="field">
-          <label>English Female voice (optional)</label>
+          <label>Bangla voice override (optional)</label>
           <select
-            value={
-              form.voiceName.startsWith('af_') || form.voiceName.startsWith('bf_')
-                ? form.voiceName
-                : ''
-            }
-            onChange={(e) => {
-              if (e.target.value) setForm((s) => ({ ...s, voiceName: e.target.value }))
-            }}
+            value={form.voiceNameBn}
+            onChange={(e) => setForm((s) => ({ ...s, voiceNameBn: e.target.value }))}
           >
-            <option value="">— বাংলা ভয়েসই ডিফল্ট রাখো —</option>
-            {(englishVoices.length
-              ? englishVoices
-              : [{ id: 'af_heart', label: 'Heart — US female' }]
-            ).map((v) => (
+            <option value="">— persona default —</option>
+            {BANGLA_VOICES.map((v) => (
               <option key={v.id} value={v.id}>
-                {v.label}
+                [{v.gender}] {v.label}
               </option>
             ))}
           </select>
+        </div>
+
+        <div className="field-row" style={{ gap: 12 }}>
+          <label>
+            <input
+              type="radio"
+              name="previewLang"
+              checked={previewLang === 'en'}
+              onChange={() => setPreviewLang('en')}
+            />{' '}
+            Preview English
+          </label>
+          <label>
+            <input
+              type="radio"
+              name="previewLang"
+              checked={previewLang === 'bn'}
+              onChange={() => setPreviewLang('bn')}
+            />{' '}
+            Preview বাংলা
+          </label>
         </div>
 
         <h3 className="settings-section">Screen agent (দেখে কাজ করে)</h3>
         <p className="settings-hint">
-          Aria এখন স্ক্রিন দেখে টাস্ক নেয় → ক্লিক/টাইপ করে → শেষ হলে জানায় (অন্য AI agent-এর মতো)।
-          <br />
-          একবার allow করো:
-          <br />
-          1) <b>Privacy → Screen Recording</b> → Electron / Jarvis
-          <br />
-          2) <b>Privacy → Accessibility</b> → Electron / Jarvis
-          <br />
-          Chrome লগইন থাকলে Facebook পোস্ট / Gmail নিজে করতে পারবে।
-          <br />
-          3) Chrome → <b>View → Developer → Allow JavaScript from Apple Events</b> (Facebook পোস্টের জন্য)
+          একবার allow করো: Privacy → Screen Recording + Accessibility → Electron / Jarvis
         </p>
         <div className="field">
           <label>Facebook Page username / ID (optional)</label>
           <input
             value={form.facebookPageId}
             onChange={(e) => setForm((s) => ({ ...s, facebookPageId: e.target.value }))}
-            placeholder="mybusinesspage — খালি রাখলে Business Inbox খুলবে"
+            placeholder="mybusinesspage"
           />
         </div>
         <div className="field">
-          <label>Optional WhatsApp name aliases (rarely needed)</label>
+          <label>Optional WhatsApp name aliases</label>
           <textarea
             rows={3}
             value={contactsText}
             onChange={(e) => setContactsText(e.target.value)}
-            placeholder={'# optional only\nJoya=Joya Robi'}
+            placeholder={'# optional\nJoya=Joya Robi'}
           />
         </div>
         <div className="field">
-          <label>Optional Gmail IMAP (else browser Gmail)</label>
+          <label>Optional Gmail IMAP</label>
           <input
             type="email"
             value={form.gmailUser}
@@ -213,7 +259,6 @@ export function SettingsModal({ initial, onClose, onSave }: Props) {
             type="password"
             value={form.gmailAppPassword}
             onChange={(e) => setForm((s) => ({ ...s, gmailAppPassword: e.target.value }))}
-            placeholder="খালি রাখলে ব্রাউজার Gmail ব্যবহার হবে"
           />
         </div>
         <div className="settings-actions">

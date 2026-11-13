@@ -87,7 +87,28 @@ textarea {
 .titlebar .actions {
   -webkit-app-region: no-drag;
   display: flex;
+  align-items: center;
   gap: 8px;
+}
+
+.voice-pick {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  font-size: 11px;
+  letter-spacing: 0.08em;
+  text-transform: uppercase;
+  color: var(--text);
+}
+
+.voice-pick select {
+  border: 1px solid var(--line);
+  background: var(--cyan-dim);
+  color: var(--text);
+  border-radius: 8px;
+  padding: 6px 10px;
+  font-size: 12px;
+  font-weight: 600;
 }
 
 .icon-btn {

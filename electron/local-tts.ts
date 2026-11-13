@@ -102,18 +102,45 @@ export function pickDefaultLocalVoice(voices: LocalVoice[], preferBangla = true)
   return enFemale?.id || pool[0]?.id || ''
 }
 
-export function stopLocalSpeak() {
-  if (speakingProc) {
-    try {
-      speakingProc.kill('SIGTERM')
-    } catch {
-      // ignore
-    }
-    speakingProc = null
+function killProcTree(proc: ChildProcessWithoutNullStreams | null) {
+  if (!proc) return
+  try {
+    proc.kill('SIGTERM')
+  } catch {
+    // ignore
   }
+}
+
+/**
+ * Stop any in-flight TTS (say / afplay). MUST be awaited before starting a new
+ * utterance — async killall without waiting races and SIGTERMs the new `say`.
+ */
+export async function stopLocalSpeak(): Promise<void> {
+  killProcTree(speakingProc)
+  speakingProc = null
+
   if (platform === 'darwin') {
-    spawn('killall', ['say'], { stdio: 'ignore' }).on('error', () => undefined)
+    await Promise.all(
+      ['say', 'afplay'].map(
+        (name) =>
+          new Promise<void>((resolve) => {
+            const child = spawn('killall', [name], { stdio: 'ignore' })
+            child.on('exit', () => resolve())
+            child.on('error', () => resolve())
+          }),
+      ),
+    )
+    // Let the OS release the audio device before the next spawn
+    await new Promise((r) => setTimeout(r, 40))
   }
+}
+
+/** Register an external player (afplay) so stopLocalSpeak can terminate it. */
+export function trackSpeakingProc(child: ChildProcessWithoutNullStreams) {
+  speakingProc = child
+  child.on('exit', () => {
+    if (speakingProc === child) speakingProc = null
+  })
 }
 
 export async function speakLocal(options: {
@@ -125,7 +152,7 @@ export async function speakLocal(options: {
   const text = options.text.trim()
   if (!text) return { ok: true }
 
-  stopLocalSpeak()
+  await stopLocalSpeak()
 
   try {
     if (platform === 'darwin') {
@@ -139,9 +166,10 @@ export async function speakLocal(options: {
         const child = spawn('say', args, { stdio: 'ignore' })
         speakingProc = child as ChildProcessWithoutNullStreams
         child.on('error', reject)
-        child.on('exit', (code) => {
+        child.on('exit', (code, signal) => {
           speakingProc = null
-          if (code && code !== 0) reject(new Error(`say exited ${code}`))
+          if (signal) reject(new Error(`say killed (${signal})`))
+          else if (code && code !== 0) reject(new Error(`say exited ${code}`))
           else resolve()
         })
       })
