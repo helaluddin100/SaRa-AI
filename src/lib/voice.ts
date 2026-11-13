@@ -20,20 +20,21 @@ export async function speak(options: {
   if (!enabled || !text.trim()) return
 
   stopSpeaking()
-  const { rate } = styleToProsody(voiceStyle)
+  const { rate, pitch } = styleToProsody(voiceStyle)
   const banglaPreferred =
     textLooksBangla(text) || Boolean(voiceName?.startsWith('bn_f_')) || voiceName === 'auto-bn'
 
   if (banglaPreferred) {
     const result = await window.jarvis.speakLocal({
       text,
-      voiceId: voiceName?.startsWith('bn_f_') ? voiceName : 'bn_f_3',
+      voiceId: voiceName?.startsWith('bn_f_') ? voiceName : 'bn_f_10',
       rate,
+      pitch,
       engine: 'piper-bn',
     })
     if (result.ok) return
-    // fallback system Piya
-    await window.jarvis.speakLocal({ text, voiceId: 'Piya', rate, engine: 'system' })
+    // fallback system Piya (macOS Bangla female)
+    await window.jarvis.speakLocal({ text, voiceId: 'Piya', rate, pitch, engine: 'system' })
     return
   }
 
@@ -41,10 +42,11 @@ export async function speak(options: {
     text,
     voiceId: voiceName?.startsWith('af_') || voiceName?.startsWith('bf_') ? voiceName : 'af_heart',
     rate,
+    pitch,
     engine: 'kokoro',
   })
   if (!result.ok) {
-    await window.jarvis.speakLocal({ text, voiceId: 'Samantha', rate, engine: 'system' })
+    await window.jarvis.speakLocal({ text, voiceId: 'Samantha', rate, pitch, engine: 'system' })
   }
 }
 
@@ -74,11 +76,23 @@ async function blobToBase64(blob: Blob): Promise<string> {
   return btoa(binary)
 }
 
+export type MicAudio = { base64: string; mimeType: string; byteLength: number }
+
 export type MicSession = {
-  stop: () => Promise<{ base64: string; mimeType: string; byteLength: number }>
+  /** Force-end recording (also used by VAD). Safe to call once. */
+  stop: () => Promise<MicAudio>
+  /** Resolves when recording ends (manual stop or silence VAD). */
+  result: Promise<MicAudio>
 }
 
-export async function startMicCapture(): Promise<MicSession> {
+type CaptureOptions = {
+  /** Auto-stop after silence once speech was detected (continuous talk mode) */
+  vad?: boolean
+  silenceMs?: number
+  maxMs?: number
+}
+
+export async function startMicCapture(options: CaptureOptions = {}): Promise<MicSession> {
   if (!navigator.mediaDevices?.getUserMedia) {
     throw new Error('Microphone API not available in this build')
   }
@@ -94,6 +108,14 @@ export async function startMicCapture(): Promise<MicSession> {
   const mimeType = pickMimeType()
   const recorder = new MediaRecorder(stream, { mimeType })
   const chunks: Blob[] = []
+  let stopped = false
+  let audioCtx: AudioContext | null = null
+  let settle!: (value: MicAudio | PromiseLike<MicAudio>) => void
+  let fail!: (reason?: unknown) => void
+  const result = new Promise<MicAudio>((resolve, reject) => {
+    settle = resolve
+    fail = reject
+  })
 
   recorder.ondataavailable = (event) => {
     if (event.data.size > 0) chunks.push(event.data)
@@ -101,43 +123,91 @@ export async function startMicCapture(): Promise<MicSession> {
 
   recorder.start(250)
 
-  return {
-    stop: () =>
-      new Promise((resolve, reject) => {
-        const finish = async () => {
-          try {
-            stream.getTracks().forEach((t) => t.stop())
-            const blob = new Blob(chunks, { type: mimeType.split(';')[0] })
-            if (blob.size < 800) {
-              reject(new Error('No speech captured. Hold mic a moment longer, then click again.'))
-              return
-            }
-            const base64 = await blobToBase64(blob)
-            resolve({
-              base64,
-              mimeType: blob.type || mimeType.split(';')[0],
-              byteLength: blob.size,
-            })
-          } catch (error) {
-            reject(error)
-          }
-        }
+  const stopInternal = () => {
+    if (stopped) return result
+    stopped = true
 
-        recorder.onerror = () => {
-          stream.getTracks().forEach((t) => t.stop())
-          reject(new Error('Microphone recording failed'))
-        }
-
-        if (recorder.state === 'inactive') {
-          void finish()
+    const finish = async () => {
+      try {
+        stream.getTracks().forEach((t) => t.stop())
+        void audioCtx?.close().catch(() => undefined)
+        const blob = new Blob(chunks, { type: mimeType.split(';')[0] })
+        if (blob.size < 800) {
+          fail(new Error('No speech captured. Speak a bit longer.'))
           return
         }
+        const base64 = await blobToBase64(blob)
+        settle({
+          base64,
+          mimeType: blob.type || mimeType.split(';')[0],
+          byteLength: blob.size,
+        })
+      } catch (error) {
+        fail(error)
+      }
+    }
 
-        recorder.onstop = () => {
-          void finish()
-        }
-        recorder.stop()
-      }),
+    recorder.onerror = () => {
+      stream.getTracks().forEach((t) => t.stop())
+      fail(new Error('Microphone recording failed'))
+    }
+
+    if (recorder.state === 'inactive') {
+      void finish()
+      return result
+    }
+
+    recorder.onstop = () => {
+      void finish()
+    }
+    recorder.stop()
+    return result
+  }
+
+  if (options.vad) {
+    const silenceMs = options.silenceMs ?? 1400
+    const maxMs = options.maxMs ?? 28000
+    const startedAt = Date.now()
+    let heardSpeech = false
+    let lastLoudAt = Date.now()
+
+    audioCtx = new AudioContext()
+    const source = audioCtx.createMediaStreamSource(stream)
+    const analyser = audioCtx.createAnalyser()
+    analyser.fftSize = 2048
+    source.connect(analyser)
+    const data = new Uint8Array(analyser.fftSize)
+
+    const tick = () => {
+      if (stopped) return
+      analyser.getByteTimeDomainData(data)
+      let sum = 0
+      for (let i = 0; i < data.length; i += 1) {
+        const v = (data[i]! - 128) / 128
+        sum += v * v
+      }
+      const rms = Math.sqrt(sum / data.length)
+      if (rms > 0.045) {
+        heardSpeech = true
+        lastLoudAt = Date.now()
+      }
+      const now = Date.now()
+      if (heardSpeech && now - lastLoudAt >= silenceMs) {
+        stopInternal()
+        return
+      }
+      if (now - startedAt >= maxMs) {
+        stopInternal()
+        return
+      }
+      requestAnimationFrame(tick)
+    }
+    requestAnimationFrame(tick)
+  }
+
+  return {
+    stop: () => stopInternal(),
+    result,
   }
 }
 

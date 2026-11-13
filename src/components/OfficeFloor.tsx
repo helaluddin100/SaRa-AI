@@ -1,4 +1,4 @@
-import { useEffect, useMemo, useRef, useState } from 'react'
+import { useEffect, useLayoutEffect, useMemo, useRef, useState } from 'react'
 import { deskList, type DeskStatus, type SpecialistId } from '../lib/agents'
 import femaleAvatar from '../assets/avatars/female-avatar.png'
 import maleAvatar from '../assets/avatars/male-avatar.png'
@@ -37,6 +37,14 @@ const AGENT_ICON: Record<SpecialistId, string> = {
   rex: '▣',
   forge: '⚒',
   pixel: '◇',
+}
+
+type WirePath = {
+  id: string
+  accent: string
+  d: string
+  nodeX: number
+  nodeY: number
 }
 
 function CoreOrb({ active }: { active: boolean }) {
@@ -109,10 +117,10 @@ function HoloShimmer({ active }: { active: boolean }) {
     const ro = new ResizeObserver(resize)
     ro.observe(canvas)
 
-    const dots = Array.from({ length: 40 }, () => ({
+    const dots = Array.from({ length: 36 }, () => ({
       x: Math.random(),
       y: Math.random(),
-      r: 0.6 + Math.random() * 1.4,
+      r: 0.6 + Math.random() * 1.3,
       s: 0.3 + Math.random() * 0.8,
       p: Math.random() * Math.PI * 2,
     }))
@@ -125,7 +133,7 @@ function HoloShimmer({ active }: { active: boolean }) {
       for (const d of dots) {
         const x = (d.x + Math.sin(t * d.s + d.p) * 0.04) * w
         const y = (d.y + Math.cos(t * d.s * 0.8 + d.p) * 0.035) * h
-        const a = 0.12 + 0.3 * (0.5 + 0.5 * Math.sin(t * 2 + d.p))
+        const a = 0.12 + 0.28 * (0.5 + 0.5 * Math.sin(t * 2 + d.p))
         ctx.beginPath()
         ctx.fillStyle = `rgba(186, 230, 253, ${a})`
         ctx.arc(x, y, d.r, 0, Math.PI * 2)
@@ -143,26 +151,6 @@ function HoloShimmer({ active }: { active: boolean }) {
   return <canvas ref={ref} className="holo-shimmer" aria-hidden />
 }
 
-function ConvergingWires({ accents }: { accents: string[] }) {
-  const paths = [
-    'M0 28 H42 L78 95 H100',
-    'M0 78 H48 L82 105 H100',
-    'M0 128 H48 L82 115 H100',
-    'M0 178 H42 L78 125 H100',
-  ]
-  return (
-    <svg className="wire-harness" viewBox="0 0 100 220" preserveAspectRatio="none" aria-hidden>
-      {paths.map((d, i) => (
-        <g key={i} className={`wire-path accent-${accents[i] || 'cyan'}`}>
-          <path d={d} className="wire-line" />
-          <path d={d} className="wire-pulse" pathLength={100} />
-          <circle className="wire-node" cx="0" cy={[28, 78, 128, 178][i]} r="2.2" />
-        </g>
-      ))}
-    </svg>
-  )
-}
-
 export function OfficeFloor({
   userName,
   managerStatus,
@@ -175,9 +163,12 @@ export function OfficeFloor({
   micDisabled,
 }: Props) {
   const [mood, setMood] = useState<AvatarMood>('male')
+  const [wires, setWires] = useState<WirePath[]>([])
+  const rootRef = useRef<HTMLDivElement>(null)
+  const chipRefs = useRef<(HTMLDivElement | null)[]>([])
+  const hudRef = useRef<HTMLDivElement>(null)
   const desks = deskList()
   const live = managerStatus !== 'idle'
-  const accents = desks.map((d) => d.accent)
 
   const statusLine = useMemo(() => {
     if (activeAgentId && activeAgentId !== 'aria') {
@@ -191,8 +182,63 @@ export function OfficeFloor({
   const holoSrc = mood === 'female' ? femaleAvatar : maleAvatar
   const thinking = managerStatus === 'thinking' || managerStatus === 'working'
 
+  useLayoutEffect(() => {
+    const root = rootRef.current
+    const hud = hudRef.current
+    if (!root || !hud) return
+
+    const rebuild = () => {
+      const rr = root.getBoundingClientRect()
+      const hr = hud.getBoundingClientRect()
+      if (rr.width < 2 || hr.width < 2) return
+
+      const targetX = hr.left - rr.left
+      const midY = hr.top - rr.top + hr.height * 0.48
+      const n = desks.length
+      const spread = Math.min(hr.height * 0.18, 36)
+
+      const next: WirePath[] = desks.map((desk, i) => {
+        const chip = chipRefs.current[i]
+        if (!chip) {
+          return { id: desk.id, accent: desk.accent, d: '', nodeX: 0, nodeY: 0 }
+        }
+        const cr = chip.getBoundingClientRect()
+        const x0 = cr.right - rr.left
+        const y0 = cr.top - rr.top + cr.height / 2
+        const x1 = targetX
+        const y1 = midY + (i - (n - 1) / 2) * (spread / Math.max(1, (n - 1) / 2 || 1))
+        const bend = x0 + Math.max(18, (x1 - x0) * 0.42)
+        const d = `M ${x0} ${y0} H ${bend} L ${x1} ${y1}`
+        return { id: desk.id, accent: desk.accent, d, nodeX: x0, nodeY: y0 }
+      })
+
+      setWires((prev) => {
+        if (
+          prev.length === next.length &&
+          prev.every((p, i) => p.d === next[i]?.d && p.accent === next[i]?.accent)
+        ) {
+          return prev
+        }
+        return next
+      })
+    }
+
+    rebuild()
+    const ro = new ResizeObserver(() => rebuild())
+    ro.observe(root)
+    ro.observe(hud)
+    chipRefs.current.forEach((el) => el && ro.observe(el))
+    window.addEventListener('resize', rebuild)
+    return () => {
+      ro.disconnect()
+      window.removeEventListener('resize', rebuild)
+    }
+    // desks list is static config; only measure on mount/resize
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [])
+
   return (
-    <div className="stonic-office">
+    <div className="stonic-office" ref={rootRef}>
       <aside className="agent-rail" aria-label="Office agents">
         {desks.map((desk, i) => {
           const id = desk.id as SpecialistId
@@ -201,6 +247,9 @@ export function OfficeFloor({
           return (
             <div
               key={id}
+              ref={(el) => {
+                chipRefs.current[i] = el
+              }}
               className={`agent-link accent-${desk.accent} ${active ? 'active' : ''} status-${st}`}
               style={{ ['--rail-i' as string]: String(i) }}
             >
@@ -215,11 +264,22 @@ export function OfficeFloor({
             </div>
           )
         })}
-        <ConvergingWires accents={accents} />
       </aside>
 
+      <svg className="wire-overlay" aria-hidden>
+        {wires.map((w) =>
+          w.d ? (
+            <g key={w.id} className={`wire-path accent-${w.accent}`}>
+              <path d={w.d} className="wire-line" />
+              <path d={w.d} className="wire-pulse" pathLength={100} />
+              <circle className="wire-node" cx={w.nodeX} cy={w.nodeY} r="2.4" />
+            </g>
+          ) : null,
+        )}
+      </svg>
+
       <section className={`avatar-stage ${live ? 'live' : ''} mood-${mood}`}>
-        <div className="hud-frame">
+        <div className="hud-frame" ref={hudRef}>
           <div className="hud-corner tl" />
           <div className="hud-corner tr" />
           <div className="hud-corner bl" />

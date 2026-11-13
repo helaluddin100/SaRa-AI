@@ -82,6 +82,11 @@ export default function App() {
   const listeningRef = useRef(false)
   const micSessionRef = useRef<MicSession | null>(null)
   const settingsRef = useRef<Settings | null>(null)
+  const voiceChatRef = useRef(false)
+  const busyRef = useRef(false)
+  const [voiceChat, setVoiceChat] = useState(false)
+  const handleSendRef = useRef<(text?: string) => Promise<void>>(async () => undefined)
+  const beginListenRef = useRef<() => Promise<void>>(async () => undefined)
 
   const platformLabel = useMemo(() => {
     if (platform === 'darwin') return 'macOS'
@@ -214,20 +219,119 @@ export default function App() {
     }
   }, [])
 
+  async function processVoiceAudio(audio: {
+    base64: string
+    mimeType: string
+  }) {
+    const s = settingsRef.current
+    if (!s) return
+    setPartial('Transcribing…')
+    setStatus('thinking')
+    try {
+      const transcript = await transcribeWithGemini({
+        apiKey: s.geminiApiKey,
+        model: s.model,
+        base64: audio.base64,
+        mimeType: audio.mimeType,
+      })
+      setPartial('')
+      if (!transcript) {
+        setError('কিছু শোনা যায়নি — আবার বলো।')
+        setStatus('idle')
+        if (voiceChatRef.current) {
+          window.setTimeout(() => void beginListenRef.current(), 500)
+        }
+        return
+      }
+      await handleSendRef.current(transcript)
+    } catch (err) {
+      setPartial('')
+      setError(err instanceof Error ? err.message : String(err))
+      setStatus('idle')
+      if (voiceChatRef.current) {
+        window.setTimeout(() => void beginListenRef.current(), 800)
+      }
+    }
+  }
+
+  async function beginListenTurn() {
+    const s = settingsRef.current
+    if (!s || !voiceChatRef.current) return
+    if (listeningRef.current) return
+
+    try {
+      const ok = await window.jarvis.ensureMicPermission()
+      if (!ok) {
+        setError('Microphone permission denied.')
+        return
+      }
+      if (!s.geminiApiKey.trim()) {
+        setError('Gemini API key needed for voice. Open Settings.')
+        setShowSettings(true)
+        return
+      }
+
+      const session = await startMicCapture({
+        vad: true,
+        silenceMs: 1300,
+        maxMs: 25000,
+      })
+      micSessionRef.current = session
+      listeningRef.current = true
+      setError('')
+      setPartial('শুনছি… থামলেই জবাব দিব (Mic = কথোপকথন বন্ধ)')
+      setStatus('listening')
+
+      // Wait until silence VAD or user stops
+      const audio = await session.result
+      micSessionRef.current = null
+      listeningRef.current = false
+      if (!voiceChatRef.current) {
+        setStatus('idle')
+        setPartial('')
+        return
+      }
+      await processVoiceAudio(audio)
+    } catch (err) {
+      listeningRef.current = false
+      micSessionRef.current = null
+      const message = err instanceof Error ? err.message : String(err)
+      if (!voiceChatRef.current) {
+        setStatus('idle')
+        setPartial('')
+        return
+      }
+      setError(
+        /Permission|NotAllowed|denied/i.test(message)
+          ? 'Microphone permission denied.'
+          : /No speech|Already stopped/i.test(message)
+            ? ''
+            : message,
+      )
+      setStatus('idle')
+      setPartial('')
+      if (voiceChatRef.current && !/Permission|NotAllowed|denied/i.test(message)) {
+        window.setTimeout(() => void beginListenRef.current(), 600)
+      }
+    }
+  }
+  beginListenRef.current = () => beginListenTurn()
+
   async function handleSend(text?: string) {
     if (!settings) return
     const content = (text ?? input).trim()
-    if (!content || status === 'thinking' || status === 'working') return
+    if (!content || busyRef.current) return
+    busyRef.current = true
 
     setError('')
     setInput('')
     setPartial('')
     setTaskProgress(null)
     setLastBrief('')
-    setRoutingLabel('Aria listening…')
+    setRoutingLabel('Aria…')
     setActiveAgentId('aria')
     stopSpeaking()
-    void window.jarvis.ensureScreenPermission()
+    // Do NOT request screen permission for chat / date / weather — only specialists need it
 
     const userMsg: UiMessage = {
       id: uid(),
@@ -260,7 +364,7 @@ export default function App() {
             }
           }
           if (ev.activeAgentId === 'aria') {
-            setRoutingLabel('Aria routing…')
+            setRoutingLabel('Aria…')
           }
         },
       })
@@ -292,76 +396,53 @@ export default function App() {
       const message = err instanceof Error ? err.message : String(err)
       setError(formatGeminiError(message))
     } finally {
+      busyRef.current = false
       setStatus('idle')
       setActiveAgentId(null)
-      setRoutingLabel('')
+      setRoutingLabel(voiceChatRef.current ? 'Live talk on' : '')
       setDeskStatuses({ mira: 'idle', rex: 'idle', forge: 'idle', pixel: 'idle' })
+      if (voiceChatRef.current) {
+        window.setTimeout(() => void beginListenRef.current(), 350)
+      }
     }
   }
+  handleSendRef.current = handleSend
 
   async function toggleListen() {
     if (!settings) return
-    if (status === 'thinking' || status === 'speaking') return
+    if (status === 'thinking' || status === 'speaking' || status === 'working') return
 
-    // Second click: stop recording → Gemini STT → send
-    if (listeningRef.current && micSessionRef.current) {
+    // Already in live talk + listening → stop conversation
+    if (voiceChatRef.current && listeningRef.current && micSessionRef.current) {
+      voiceChatRef.current = false
+      setVoiceChat(false)
       listeningRef.current = false
-      setPartial('Transcribing…')
-      setStatus('thinking')
       try {
-        const audio = await micSessionRef.current.stop()
-        micSessionRef.current = null
-        const transcript = await transcribeWithGemini({
-          apiKey: settings.geminiApiKey,
-          model: settings.model,
-          base64: audio.base64,
-          mimeType: audio.mimeType,
-        })
-        setPartial('')
-        if (!transcript) {
-          setError('Could not hear anything. Click Mic, speak, then click Mic again.')
-          setStatus('idle')
-          return
-        }
-        await handleSend(transcript)
-      } catch (err) {
-        micSessionRef.current = null
-        setPartial('')
-        setError(err instanceof Error ? err.message : String(err))
-        setStatus('idle')
+        await micSessionRef.current.stop()
+      } catch {
+        // ignore
       }
+      micSessionRef.current = null
+      setPartial('')
+      setStatus('idle')
+      setRoutingLabel('')
       return
     }
 
-    try {
-      const ok = await window.jarvis.ensureMicPermission()
-      if (!ok) {
-        setError('Microphone permission denied. Allow mic for Electron/Jarvis in System Settings.')
-        return
-      }
-      if (!settings.geminiApiKey.trim()) {
-        setError('Gemini API key needed for voice. Open Settings.')
-        setShowSettings(true)
-        return
-      }
-
-      const session = await startMicCapture()
-      micSessionRef.current = session
-      listeningRef.current = true
-      setError('')
-      setPartial('Listening… click Mic again when done')
-      setStatus('listening')
-    } catch (err) {
-      listeningRef.current = false
-      micSessionRef.current = null
-      const message = err instanceof Error ? err.message : String(err)
-      setError(
-        /Permission|NotAllowed|denied/i.test(message)
-          ? 'Microphone permission denied. Allow mic in System Settings → Privacy → Microphone.'
-          : message,
-      )
-      setStatus('idle')
+    // Live talk idle → stop mode
+    if (voiceChatRef.current && !listeningRef.current) {
+      voiceChatRef.current = false
+      setVoiceChat(false)
+      setPartial('')
+      setRoutingLabel('')
+      return
     }
+
+    // Start continuous conversation (listen → reply → listen)
+    voiceChatRef.current = true
+    setVoiceChat(true)
+    setRoutingLabel('Live talk on')
+    await beginListenTurn()
   }
 
   async function saveSettings(next: Settings) {
@@ -389,6 +470,9 @@ export default function App() {
   }
 
   function terminateSession() {
+    voiceChatRef.current = false
+    setVoiceChat(false)
+    busyRef.current = false
     stopSpeaking()
     if (listeningRef.current && micSessionRef.current) {
       listeningRef.current = false
@@ -474,8 +558,14 @@ export default function App() {
 
         <section className="chat-panel stonic-chat">
           <div className="chat-tabs" role="tablist">
-            <button type="button" className="chat-tab active" role="tab">
-              Voice
+            <button
+              type="button"
+              className={`chat-tab ${voiceChat ? 'active' : ''}`}
+              role="tab"
+              onClick={() => void toggleListen()}
+              title="Live voice conversation"
+            >
+              {voiceChat ? 'Live ●' : 'Voice'}
             </button>
             <button type="button" className="chat-tab" role="tab">
               Agent

@@ -96,11 +96,33 @@ const ALL_TOOL_DECLARATIONS: ToolDecl[] = [
   },
   {
     name: 'get_system_info',
-    description: 'Get PC health: CPU%, RAM, cores, uptime.',
+    description: 'Get PC health: CPU%, RAM, cores, uptime. Do NOT use for date/time/weather.',
     parameters: {
       type: 'OBJECT',
       properties: {
         confirm: { type: 'BOOLEAN', description: 'Optional confirm flag' },
+      },
+    },
+  },
+  {
+    name: 'get_datetime',
+    description:
+      'Instant local date, weekday, and current time from the PC clock. Use for "আজকের তারিখ/দিন/সময়" — never open a browser or Calendar app.',
+    parameters: {
+      type: 'OBJECT',
+      properties: {
+        confirm: { type: 'BOOLEAN' },
+      },
+    },
+  },
+  {
+    name: 'get_weather',
+    description:
+      'Live weather via network API (no browser). Optional city (default Dhaka). Use for "আজকের আবহাওয়া" — never open Chrome or Weather app.',
+    parameters: {
+      type: 'OBJECT',
+      properties: {
+        city: { type: 'STRING', description: 'City name, e.g. Dhaka, Chittagong' },
       },
     },
   },
@@ -223,6 +245,10 @@ async function runTool(name: string, args: Record<string, unknown>): Promise<Rec
     }
     case 'get_system_info':
       return window.jarvis.systemInfo()
+    case 'get_datetime':
+      return window.jarvis.getLocalDateTime()
+    case 'get_weather':
+      return window.jarvis.getLocalWeather(args.city ? String(args.city) : undefined)
     case 'open_whatsapp':
       return window.jarvis.openWhatsApp()
     case 'send_whatsapp_message':
@@ -526,12 +552,19 @@ export async function askJarvis(options: {
       ? `Known facts about the user:\n${memory.map((m) => `- ${m.text}`).join('\n')}`
       : 'No stored personal facts yet.'
 
+  const clock = (await window.jarvis.getLocalDateTime()) as {
+    weekdayBn?: string
+    dateBn?: string
+    timeBn?: string
+    timezone?: string
+  }
+
   onOfficeStatus?.({
     activeAgentId: 'aria',
     deskStatuses: {},
   })
 
-  const systemText = `${JARVIS_CHARACTER.systemPrompt}\n\nUser name: ${userName || 'unknown'}\n${memoryBlock}`
+  const systemText = `${JARVIS_CHARACTER.systemPrompt}\n\nUser name: ${userName || 'unknown'}\n${memoryBlock}\n\nPC clock (already local — do not open apps for this): ${clock.weekdayBn || ''}, ${clock.dateBn || ''}, ${clock.timeBn || ''} (${clock.timezone || 'local'}). For weather use get_weather tool.`
   const contents = buildHistoryContents(history, userText)
 
   let lastSpecialistId: SpecialistId | undefined

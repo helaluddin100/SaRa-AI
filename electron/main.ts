@@ -12,6 +12,7 @@ import {
 import { generateMapsLeads } from './leads'
 import { speakWithKokoro, textMostlyBangla, warmupKokoro } from './kokoro-tts'
 import { listLocalVoices, speakLocal, stopLocalSpeak } from './local-tts'
+import { getLocalDateTime, getLocalWeather } from './local-context'
 import { BANGLA_FEMALE_VOICES, speakBanglaPiper, warmupPiperBangla } from './piper-bangla'
 import { closeApp, getSystemInfo, listKnownApps, openApp, openUrl } from './pc-control'
 import {
@@ -94,6 +95,8 @@ function registerIpc() {
   ipcMain.handle('pc:openUrl', (_e, url: string) => openUrl(url))
   ipcMain.handle('pc:systemInfo', () => getSystemInfo())
   ipcMain.handle('pc:knownApps', () => listKnownApps())
+  ipcMain.handle('local:datetime', () => getLocalDateTime())
+  ipcMain.handle('local:weather', (_e, city?: string) => getLocalWeather(city))
 
   ipcMain.handle('integrations:openWhatsApp', () => openWhatsApp())
   ipcMain.handle(
@@ -229,6 +232,7 @@ function registerIpc() {
         text: string
         voiceId?: string
         rate?: number
+        pitch?: number
         engine?: 'auto' | 'kokoro' | 'piper-bn' | 'system'
       },
     ) => {
@@ -243,6 +247,8 @@ function registerIpc() {
         const bn = await speakBanglaPiper({
           text: payload.text,
           voiceId: payload.voiceId,
+          rate: payload.rate,
+          pitch: payload.pitch ?? 1.08,
         })
         if (bn.ok || engine === 'piper-bn' || banglaVoice) return bn
         // fallback Piya
@@ -254,6 +260,7 @@ function registerIpc() {
           text: payload.text,
           voiceId: payload.voiceId,
           speed: payload.rate ?? 1,
+          pitch: payload.pitch ?? 1.08,
         })
         if (neural.ok || engine === 'kokoro') return neural
       }

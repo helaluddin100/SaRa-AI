@@ -97,6 +97,7 @@ export async function speakWithKokoro(options: {
   text: string
   voiceId?: string
   speed?: number
+  pitch?: number
 }): Promise<{ ok: boolean; message?: string }> {
   const text = options.text.trim()
   if (!text) return { ok: true }
@@ -120,7 +121,8 @@ export async function speakWithKokoro(options: {
     const tmp = path.join(os.tmpdir(), `aria-kokoro-${Date.now()}.wav`)
     fs.writeFileSync(tmp, wav)
 
-    await playWavFile(tmp)
+    const playRate = Math.max(0.85, Math.min(1.25, options.pitch ?? 1.06))
+    await playWavFile(tmp, playRate)
     fs.promises.unlink(tmp).catch(() => undefined)
     return { ok: true }
   } catch (error) {
@@ -129,19 +131,20 @@ export async function speakWithKokoro(options: {
   }
 }
 
-function playWavFile(filePath: string): Promise<void> {
+function playWavFile(filePath: string, rate = 1): Promise<void> {
   return new Promise((resolve, reject) => {
     const platform = process.platform
+    const clamped = Math.max(0.85, Math.min(1.35, rate))
     const child =
       platform === 'darwin'
-        ? spawn('afplay', [filePath], { stdio: 'ignore' })
+        ? spawn('afplay', ['-r', String(clamped), filePath], { stdio: 'ignore' })
         : platform === 'win32'
           ? spawn(
               'powershell.exe',
               [
                 '-NoProfile',
                 '-Command',
-                `Add-Type -AssemblyName PresentationCore; $p = New-Object System.Windows.Media.MediaPlayer; $p.Open([Uri]'${filePath.replace(/'/g, "''")}'); $p.Play(); while($p.Position -lt $p.NaturalDuration.TimeSpan){ Start-Sleep -Milliseconds 100 }`,
+                `Add-Type -AssemblyName PresentationCore; $p = New-Object System.Windows.Media.MediaPlayer; $p.Open([Uri]'${filePath.replace(/'/g, "''")}'); $p.SpeedRatio = ${clamped}; $p.Play(); while($p.Position -lt $p.NaturalDuration.TimeSpan){ Start-Sleep -Milliseconds 100 }`,
               ],
               { stdio: 'ignore', windowsHide: true },
             )

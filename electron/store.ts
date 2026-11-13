@@ -53,7 +53,7 @@ const defaults: AppData = {
     model: 'gemini-3.8-flash',
     voiceEnabled: true,
     userName: '',
-    voiceName: 'bn_f_3',
+    voiceName: 'bn_f_10',
     whatsappContacts: {},
     gmailUser: '',
     gmailAppPassword: '',

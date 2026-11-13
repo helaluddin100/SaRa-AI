@@ -129,12 +129,12 @@ export function SettingsModal({ initial, onClose, onSave }: Props) {
         <div className="field">
           <label>বাংলা Female voice (recommended)</label>
           <select
-            value={form.voiceName.startsWith('bn_f_') ? form.voiceName : 'bn_f_3'}
+            value={form.voiceName.startsWith('bn_f_') ? form.voiceName : 'bn_f_10'}
             onChange={(e) => setForm((s) => ({ ...s, voiceName: e.target.value }))}
           >
             {(banglaVoices.length
               ? banglaVoices
-              : [{ id: 'bn_f_3', label: 'বাংলা Female A (natural)' }]
+              : [{ id: 'bn_f_10', label: 'বাংলা Female A (bright)' }]
             ).map((v) => (
               <option key={v.id} value={v.id}>
                 {v.label}

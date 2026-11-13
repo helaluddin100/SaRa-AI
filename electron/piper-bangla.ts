@@ -15,10 +15,10 @@ type PiperTts = {
 
 /** Hand-picked brighter/female-leaning speakers from bn_BD google multi-speaker model */
 export const BANGLA_FEMALE_VOICES = [
-  { id: 'bn_f_3', label: 'বাংলা Female A (natural)', speakerId: 3 },
-  { id: 'bn_f_10', label: 'বাংলা Female B (bright)', speakerId: 10 },
-  { id: 'bn_f_13', label: 'বাংলা Female C (soft)', speakerId: 13 },
-  { id: 'bn_f_15', label: 'বাংলা Female D', speakerId: 15 },
+  { id: 'bn_f_10', label: 'বাংলা Female A (bright)', speakerId: 10 },
+  { id: 'bn_f_13', label: 'বাংলা Female B (soft)', speakerId: 13 },
+  { id: 'bn_f_15', label: 'বাংলা Female C', speakerId: 15 },
+  { id: 'bn_f_3', label: 'বাংলা Female D', speakerId: 3 },
   { id: 'bn_f_0', label: 'বাংলা Female E', speakerId: 0 },
 ] as const
 
@@ -105,18 +105,24 @@ function writeWav(int16: Int16Array, sampleRate: number): Buffer {
   return buf
 }
 
-function playWavFile(filePath: string): Promise<void> {
+export function resolveBanglaSpeakerId(voiceId?: string): number {
+  const found = BANGLA_FEMALE_VOICES.find((v) => v.id === voiceId)
+  return found?.speakerId ?? 10
+}
+
+function playWavFile(filePath: string, rate = 1): Promise<void> {
   return new Promise((resolve, reject) => {
+    const clamped = Math.max(0.85, Math.min(1.35, rate))
     const child =
       process.platform === 'darwin'
-        ? spawn('afplay', [filePath], { stdio: 'ignore' })
+        ? spawn('afplay', ['-r', String(clamped), filePath], { stdio: 'ignore' })
         : process.platform === 'win32'
           ? spawn(
               'powershell.exe',
               [
                 '-NoProfile',
                 '-Command',
-                `Add-Type -AssemblyName PresentationCore; $p = New-Object System.Windows.Media.MediaPlayer; $p.Open([Uri]'${filePath.replace(/'/g, "''")}'); $p.Play(); Start-Sleep -Milliseconds 300; while($p.Position -lt $p.NaturalDuration.TimeSpan){ Start-Sleep -Milliseconds 100 }`,
+                `Add-Type -AssemblyName PresentationCore; $p = New-Object System.Windows.Media.MediaPlayer; $p.Open([Uri]'${filePath.replace(/'/g, "''")}'); $p.SpeedRatio = ${clamped}; $p.Play(); Start-Sleep -Milliseconds 300; while($p.Position -lt $p.NaturalDuration.TimeSpan){ Start-Sleep -Milliseconds 100 }`,
               ],
               { stdio: 'ignore', windowsHide: true },
             )
@@ -129,14 +135,11 @@ function playWavFile(filePath: string): Promise<void> {
   })
 }
 
-export function resolveBanglaSpeakerId(voiceId?: string): number {
-  const found = BANGLA_FEMALE_VOICES.find((v) => v.id === voiceId)
-  return found?.speakerId ?? 3
-}
-
 export async function speakBanglaPiper(options: {
   text: string
   voiceId?: string
+  rate?: number
+  pitch?: number
 }): Promise<{ ok: boolean; message?: string }> {
   const text = options.text.trim()
   if (!text) return { ok: true }
@@ -144,12 +147,18 @@ export async function speakBanglaPiper(options: {
   try {
     const tts = await getPiper()
     const speakerId = resolveBanglaSpeakerId(options.voiceId)
-    const { audio, sampleRate } = await tts.synthesize(text, { speakerId })
+    // pipertts accepts speakerId; some builds use speaker_id — try both via object spread
+    const { audio, sampleRate } = await tts.synthesize(text, {
+      speakerId,
+      speaker_id: speakerId,
+    } as { speakerId?: number })
     const pcm = toInt16(audio)
     const wav = writeWav(pcm, sampleRate || 22050)
     const tmp = path.join(os.tmpdir(), `aria-bn-${Date.now()}.wav`)
     fs.writeFileSync(tmp, wav)
-    await playWavFile(tmp)
+    // Slightly higher playback rate → brighter/female-leaning timbre
+    const playRate = (options.rate ?? 1) * (options.pitch ?? 1.08)
+    await playWavFile(tmp, playRate)
     fs.promises.unlink(tmp).catch(() => undefined)
     return { ok: true }
   } catch (error) {

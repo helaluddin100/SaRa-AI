@@ -50,6 +50,8 @@ export type JarvisAPI = {
   closeApp: (name: string) => Promise<{ ok: boolean; message: string }>
   openUrl: (url: string) => Promise<{ ok: boolean; message: string }>
   systemInfo: () => Promise<Record<string, unknown>>
+  getLocalDateTime: () => Promise<Record<string, unknown>>
+  getLocalWeather: (city?: string) => Promise<Record<string, unknown>>
   knownApps: () => Promise<string[]>
   ensureMicPermission: () => Promise<boolean>
   ensureScreenPermission: () => Promise<boolean>
@@ -66,6 +68,7 @@ export type JarvisAPI = {
     text: string
     voiceId?: string
     rate?: number
+    pitch?: number
     engine?: 'auto' | 'kokoro' | 'piper-bn' | 'system'
   }) => Promise<{ ok: boolean; message?: string }>
   stopLocalSpeak: () => Promise<boolean>
@@ -122,6 +125,8 @@ const api: JarvisAPI = {
   closeApp: (name) => ipcRenderer.invoke('pc:closeApp', name),
   openUrl: (url) => ipcRenderer.invoke('pc:openUrl', url),
   systemInfo: () => ipcRenderer.invoke('pc:systemInfo'),
+  getLocalDateTime: () => ipcRenderer.invoke('local:datetime'),
+  getLocalWeather: (city) => ipcRenderer.invoke('local:weather', city),
   knownApps: () => ipcRenderer.invoke('pc:knownApps'),
   ensureMicPermission: () => ipcRenderer.invoke('mic:ensurePermission'),
   ensureScreenPermission: () => ipcRenderer.invoke('screen:ensurePermission'),
