@@ -29,6 +29,9 @@ import {
 } from './scheduler'
 import {
   addMemory,
+  clearEmotionMemory,
+  getEmotionMemory,
+  setEmotionMemory,
   appendHistory,
   clearHistory,
   clearMemory,
@@ -88,6 +91,10 @@ function registerIpc() {
     clearMemory()
     return []
   })
+
+  ipcMain.handle('emotion:get', () => getEmotionMemory())
+  ipcMain.handle('emotion:set', (_e, partial: Record<string, unknown>) => setEmotionMemory(partial))
+  ipcMain.handle('emotion:clear', () => clearEmotionMemory())
 
   ipcMain.handle('history:list', () => getHistory())
   ipcMain.handle('history:append', (_e, messages: ChatMessage[]) => appendHistory(messages))

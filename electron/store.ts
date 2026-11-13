@@ -6,6 +6,47 @@ export type MemoryFact = {
   createdAt: string
 }
 
+/** Companion emotion memory — how the user feels + what moves them */
+export type EmotionMood =
+  | 'neutral'
+  | 'sad'
+  | 'happy'
+  | 'lonely'
+  | 'angry'
+  | 'anxious'
+  | 'affectionate'
+  | 'intimate'
+  | 'excited'
+  | 'tired'
+
+export type EmotionMemory = {
+  currentMood: EmotionMood
+  intensity: number
+  lastNote: string
+  updatedAt: string
+  likes: string[]
+  dislikes: string[]
+  joyTriggers: string[]
+  sadnessTriggers: string[]
+  nightMoodNotes: string[]
+  intimatePreferences: string[]
+  history: Array<{ at: string; mood: EmotionMood; note: string }>
+}
+
+export const defaultEmotionMemory = (): EmotionMemory => ({
+  currentMood: 'neutral',
+  intensity: 2,
+  lastNote: '',
+  updatedAt: new Date().toISOString(),
+  likes: [],
+  dislikes: [],
+  joyTriggers: [],
+  sadnessTriggers: [],
+  nightMoodNotes: [],
+  intimatePreferences: [],
+  history: [],
+})
+
 export type ChatMessage = {
   role: 'user' | 'assistant' | 'system'
   content: string
@@ -48,6 +89,7 @@ export type ScheduledTask = {
 export type AppData = {
   settings: AppSettings
   memory: MemoryFact[]
+  emotionMemory: EmotionMemory
   history: ChatMessage[]
   scheduledTasks: ScheduledTask[]
 }
@@ -68,6 +110,7 @@ const defaults: AppData = {
     facebookPageToken: '',
   },
   memory: [],
+  emotionMemory: defaultEmotionMemory(),
   history: [],
   scheduledTasks: [],
 }
@@ -162,6 +205,86 @@ export function addMemory(text: string): MemoryFact {
 
 export function clearMemory(): void {
   store.set('memory', [])
+}
+
+function normalizeEmotionList(list: unknown, max = 24): string[] {
+  if (!Array.isArray(list)) return []
+  return list
+    .map((x) => String(x || '').trim())
+    .filter(Boolean)
+    .slice(-max)
+}
+
+export function getEmotionMemory(): EmotionMemory {
+  const raw = store.get('emotionMemory') as EmotionMemory | undefined
+  if (!raw || typeof raw !== 'object') return defaultEmotionMemory()
+  return {
+    ...defaultEmotionMemory(),
+    ...raw,
+    likes: normalizeEmotionList(raw.likes),
+    dislikes: normalizeEmotionList(raw.dislikes),
+    joyTriggers: normalizeEmotionList(raw.joyTriggers),
+    sadnessTriggers: normalizeEmotionList(raw.sadnessTriggers),
+    nightMoodNotes: normalizeEmotionList(raw.nightMoodNotes),
+    intimatePreferences: normalizeEmotionList(raw.intimatePreferences),
+    history: Array.isArray(raw.history) ? raw.history.slice(-40) : [],
+    intensity: Math.max(1, Math.min(5, Number(raw.intensity) || 2)),
+  }
+}
+
+const VALID_MOODS = new Set([
+  'neutral',
+  'sad',
+  'happy',
+  'lonely',
+  'angry',
+  'anxious',
+  'affectionate',
+  'intimate',
+  'excited',
+  'tired',
+])
+
+export function setEmotionMemory(partial: Partial<EmotionMemory>): EmotionMemory {
+  const cur = getEmotionMemory()
+  const mood =
+    partial.currentMood && VALID_MOODS.has(partial.currentMood)
+      ? partial.currentMood
+      : cur.currentMood
+  const next: EmotionMemory = {
+    ...cur,
+    ...partial,
+    currentMood: mood,
+    likes: normalizeEmotionList(partial.likes ?? cur.likes),
+    dislikes: normalizeEmotionList(partial.dislikes ?? cur.dislikes),
+    joyTriggers: normalizeEmotionList(partial.joyTriggers ?? cur.joyTriggers),
+    sadnessTriggers: normalizeEmotionList(partial.sadnessTriggers ?? cur.sadnessTriggers),
+    nightMoodNotes: normalizeEmotionList(partial.nightMoodNotes ?? cur.nightMoodNotes),
+    intimatePreferences: normalizeEmotionList(
+      partial.intimatePreferences ?? cur.intimatePreferences,
+    ),
+    history: Array.isArray(partial.history) ? partial.history.slice(-40) : cur.history,
+    intensity: Math.max(1, Math.min(5, Number(partial.intensity ?? cur.intensity) || 2)),
+    updatedAt: new Date().toISOString(),
+  }
+  if (mood !== cur.currentMood) {
+    next.history = [
+      ...next.history,
+      {
+        at: new Date().toISOString(),
+        mood,
+        note: (partial.lastNote || cur.lastNote || mood).slice(0, 160),
+      },
+    ].slice(-40)
+  }
+  store.set('emotionMemory', next)
+  return next
+}
+
+export function clearEmotionMemory(): EmotionMemory {
+  const blank = defaultEmotionMemory()
+  store.set('emotionMemory', blank)
+  return blank
 }
 
 export function getHistory(): ChatMessage[] {

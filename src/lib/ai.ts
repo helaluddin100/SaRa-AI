@@ -5,6 +5,13 @@ import {
   type SpecialistId,
 } from './agents'
 import { JARVIS_CHARACTER, splitReplyAndVoiceStyle } from './character'
+import {
+  detectEmotionFromText,
+  formatEmotionBlock,
+  isEmotionMood,
+  voiceStyleForMood,
+  type EmotionMemory,
+} from './emotionMemory'
 
 type GeminiPart = Record<string, unknown> & {
   text?: string
@@ -92,6 +99,29 @@ const ALL_TOOL_DECLARATIONS: ToolDecl[] = [
         fact: { type: 'STRING' },
       },
       required: ['fact'],
+    },
+  },
+  {
+    name: 'update_emotion_memory',
+    description:
+      'Update emotion memory: current mood and/or lasting likes, dislikes, joy/sadness triggers, night feelings, intimate preferences. Call when the user reveals how they feel or what moves them.',
+    parameters: {
+      type: 'OBJECT',
+      properties: {
+        mood: {
+          type: 'STRING',
+          description:
+            'neutral|sad|happy|lonely|angry|anxious|affectionate|intimate|excited|tired',
+        },
+        intensity: { type: 'NUMBER', description: '1–5' },
+        note: { type: 'STRING', description: 'Short note about this feeling' },
+        add_like: { type: 'STRING' },
+        add_dislike: { type: 'STRING' },
+        add_joy_trigger: { type: 'STRING' },
+        add_sadness_trigger: { type: 'STRING' },
+        add_night_note: { type: 'STRING' },
+        add_intimate_preference: { type: 'STRING' },
+      },
     },
   },
   {
@@ -242,6 +272,28 @@ async function runTool(name: string, args: Record<string, unknown>): Promise<Rec
     case 'remember_fact': {
       const fact = await window.jarvis.addMemory(String(args.fact || ''))
       return { ok: true, saved: fact.text }
+    }
+    case 'update_emotion_memory': {
+      const cur = await window.jarvis.getEmotionMemory()
+      const push = (list: string[], item?: unknown) => {
+        const v = String(item || '').trim()
+        if (!v) return list
+        if (list.some((x) => x.toLowerCase() === v.toLowerCase())) return list
+        return [...list, v].slice(-24)
+      }
+      const moodRaw = String(args.mood || '').trim().toLowerCase()
+      const next = await window.jarvis.setEmotionMemory({
+        currentMood: isEmotionMood(moodRaw) ? moodRaw : cur.currentMood,
+        intensity: args.intensity != null ? Number(args.intensity) : cur.intensity,
+        lastNote: args.note != null ? String(args.note) : cur.lastNote,
+        likes: push(cur.likes, args.add_like),
+        dislikes: push(cur.dislikes, args.add_dislike),
+        joyTriggers: push(cur.joyTriggers, args.add_joy_trigger),
+        sadnessTriggers: push(cur.sadnessTriggers, args.add_sadness_trigger),
+        nightMoodNotes: push(cur.nightMoodNotes, args.add_night_note),
+        intimatePreferences: push(cur.intimatePreferences, args.add_intimate_preference),
+      })
+      return { ok: true, emotion: next }
     }
     case 'get_system_info':
       return window.jarvis.systemInfo()
@@ -552,6 +604,27 @@ export async function askJarvis(options: {
       ? `Known facts about the user:\n${memory.map((m) => `- ${m.text}`).join('\n')}`
       : 'No stored personal facts yet.'
 
+  // Emotion memory: detect from this turn, persist, then inject into prompt
+  let emotion = (await window.jarvis.getEmotionMemory()) as EmotionMemory
+  const detected = detectEmotionFromText(userText)
+  if (detected) {
+    emotion = (await window.jarvis.setEmotionMemory({
+      currentMood: detected.mood,
+      intensity: detected.intensity,
+      lastNote: detected.note,
+    })) as EmotionMemory
+  }
+  // Night-time pattern capture (soft)
+  if (/রাত|tonight|late night/i.test(userText) && detected) {
+    const note = `${detected.mood}: ${detected.note}`
+    if (!emotion.nightMoodNotes.some((n) => n.includes(detected.note.slice(0, 40)))) {
+      emotion = (await window.jarvis.setEmotionMemory({
+        nightMoodNotes: [...emotion.nightMoodNotes, note].slice(-24),
+      })) as EmotionMemory
+    }
+  }
+  const emotionBlock = formatEmotionBlock(emotion)
+
   const clock = (await window.jarvis.getLocalDateTime()) as {
     weekdayBn?: string
     dateBn?: string
@@ -564,7 +637,7 @@ export async function askJarvis(options: {
     deskStatuses: {},
   })
 
-  const systemText = `${JARVIS_CHARACTER.systemPrompt}\n\nUser name: ${userName || 'unknown'}\n${memoryBlock}\n\nPC clock (already local — do not open apps for this): ${clock.weekdayBn || ''}, ${clock.dateBn || ''}, ${clock.timeBn || ''} (${clock.timezone || 'local'}). For weather use get_weather tool.`
+  const systemText = `${JARVIS_CHARACTER.systemPrompt}\n\nUser name: ${userName || 'unknown'}\n${memoryBlock}\n\n${emotionBlock}\n\nPC clock (already local — do not open apps for this): ${clock.weekdayBn || ''}, ${clock.dateBn || ''}, ${clock.timeBn || ''} (${clock.timezone || 'local'}). For weather use get_weather tool.`
   const contents = buildHistoryContents(history, userText)
 
   let lastSpecialistId: SpecialistId | undefined
@@ -620,8 +693,10 @@ export async function askJarvis(options: {
   })
 
   const split = splitReplyAndVoiceStyle(raw)
+  const mood = isEmotionMood(emotion.currentMood) ? emotion.currentMood : 'neutral'
   return {
-    ...split,
+    text: split.text,
+    voiceStyle: split.voiceStyle || voiceStyleForMood(mood),
     agentId: lastSpecialistId,
     agentName: lastSpecialistName,
   }

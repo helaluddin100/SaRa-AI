@@ -43,6 +43,21 @@ export type JarvisAPI = {
   listMemory: () => Promise<Array<{ id: string; text: string; createdAt: string }>>
   addMemory: (text: string) => Promise<{ id: string; text: string; createdAt: string }>
   clearMemory: () => Promise<[]>
+  getEmotionMemory: () => Promise<{
+    currentMood: string
+    intensity: number
+    lastNote: string
+    updatedAt: string
+    likes: string[]
+    dislikes: string[]
+    joyTriggers: string[]
+    sadnessTriggers: string[]
+    nightMoodNotes: string[]
+    intimatePreferences: string[]
+    history: Array<{ at: string; mood: string; note: string }>
+  }>
+  setEmotionMemory: (partial: Record<string, unknown>) => Promise<Record<string, unknown>>
+  clearEmotionMemory: () => Promise<Record<string, unknown>>
   listHistory: () => Promise<Array<{ role: string; content: string; at: string }>>
   appendHistory: (
     messages: Array<{ role: string; content: string; at: string }>,
@@ -120,6 +135,9 @@ const api: JarvisAPI = {
   listMemory: () => ipcRenderer.invoke('memory:list'),
   addMemory: (text) => ipcRenderer.invoke('memory:add', text),
   clearMemory: () => ipcRenderer.invoke('memory:clear'),
+  getEmotionMemory: () => ipcRenderer.invoke('emotion:get'),
+  setEmotionMemory: (partial) => ipcRenderer.invoke('emotion:set', partial),
+  clearEmotionMemory: () => ipcRenderer.invoke('emotion:clear'),
   listHistory: () => ipcRenderer.invoke('history:list'),
   appendHistory: (messages) => ipcRenderer.invoke('history:append', messages),
   clearHistory: () => ipcRenderer.invoke('history:clear'),
