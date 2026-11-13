@@ -1,6 +1,8 @@
 import { FormEvent, useEffect, useMemo, useRef, useState } from 'react'
 import { CorePanel } from './components/CorePanel'
+import { SatLinkPanel } from './components/SatLinkPanel'
 import { SettingsModal } from './components/SettingsModal'
+import type { DeskStatus, SpecialistId } from './lib/agents'
 import { askJarvis } from './lib/ai'
 import { JARVIS_CHARACTER, type UiMessage } from './lib/character'
 import { formatGeminiError } from './lib/errors'
@@ -72,6 +74,10 @@ export default function App() {
     load1: number
   } | null>(null)
   const [nowMs, setNowMs] = useState(() => Date.now())
+  const [activeAgentId, setActiveAgentId] = useState<SpecialistId | 'aria' | null>(null)
+  const [deskStatuses, setDeskStatuses] = useState<Partial<Record<SpecialistId, DeskStatus>>>({})
+  const [lastBrief, setLastBrief] = useState('')
+  const [routingLabel, setRoutingLabel] = useState('')
   const listRef = useRef<HTMLDivElement>(null)
   const listeningRef = useRef(false)
   const micSessionRef = useRef<MicSession | null>(null)
@@ -217,6 +223,9 @@ export default function App() {
     setInput('')
     setPartial('')
     setTaskProgress(null)
+    setLastBrief('')
+    setRoutingLabel('Aria listening…')
+    setActiveAgentId('aria')
     stopSpeaking()
     void window.jarvis.ensureScreenPermission()
 
@@ -240,6 +249,20 @@ export default function App() {
         userName: settings.userName,
         userText: content,
         history,
+        onOfficeStatus: (ev) => {
+          setActiveAgentId(ev.activeAgentId)
+          setDeskStatuses((prev) => ({ ...prev, ...ev.deskStatuses }))
+          if (ev.lastBrief) {
+            setLastBrief(ev.lastBrief)
+            if (ev.activeAgentId && ev.activeAgentId !== 'aria') {
+              setRoutingLabel(`Assigned → ${ev.activeAgentId}`)
+              setStatus('working')
+            }
+          }
+          if (ev.activeAgentId === 'aria') {
+            setRoutingLabel('Aria routing…')
+          }
+        },
       })
 
       const assistantMsg: UiMessage = {
@@ -247,6 +270,8 @@ export default function App() {
         role: 'assistant',
         content: reply.text,
         at: new Date().toISOString(),
+        agentId: reply.agentId || 'aria',
+        agentName: reply.agentName || 'Aria',
       }
       setMessages((prev) => [...prev, assistantMsg])
       await window.jarvis.appendHistory([
@@ -268,6 +293,9 @@ export default function App() {
       setError(formatGeminiError(message))
     } finally {
       setStatus('idle')
+      setActiveAgentId(null)
+      setRoutingLabel('')
+      setDeskStatuses({ mira: 'idle', rex: 'idle', forge: 'idle', pixel: 'idle' })
     }
   }
 
@@ -360,6 +388,21 @@ export default function App() {
     void handleSend()
   }
 
+  function terminateSession() {
+    stopSpeaking()
+    if (listeningRef.current && micSessionRef.current) {
+      listeningRef.current = false
+      void micSessionRef.current.stop().catch(() => undefined)
+      micSessionRef.current = null
+    }
+    setPartial('')
+    setTaskProgress(null)
+    setStatus('idle')
+    setActiveAgentId(null)
+    setRoutingLabel('')
+    setDeskStatuses({ mira: 'idle', rex: 'idle', forge: 'idle', pixel: 'idle' })
+  }
+
   if (!settings) {
     return (
       <div className="app">
@@ -404,7 +447,15 @@ export default function App() {
         </div>
       ) : null}
 
-      <div className="stage">
+      <div className="stage command-deck">
+        <SatLinkPanel
+          metricsLabel={
+            metrics
+              ? `CPU ${metrics.cpuPercent.toFixed(0)}% · RAM ${metrics.memPercent.toFixed(0)}%`
+              : undefined
+          }
+        />
+
         <CorePanel
           status={status}
           userName={settings.userName}
@@ -413,43 +464,65 @@ export default function App() {
           schedules={scheduled}
           nowMs={nowMs}
           onCancelSchedule={(id) => void window.jarvis.cancelScheduledTask(id)}
+          activeAgentId={activeAgentId}
+          deskStatuses={deskStatuses}
+          lastBrief={lastBrief}
+          routingLabel={routingLabel}
+          onTerminate={terminateSession}
+          onMic={() => void toggleListen()}
         />
 
-        <section className="chat-panel">
+        <section className="chat-panel stonic-chat">
+          <div className="chat-tabs" role="tablist">
+            <button type="button" className="chat-tab active" role="tab">
+              Voice
+            </button>
+            <button type="button" className="chat-tab" role="tab">
+              Agent
+            </button>
+            <button type="button" className="chat-tab" role="tab">
+              Notes
+            </button>
+          </div>
+
           <div className="chat-header">
-            <h2>Conversation</h2>
-            <span style={{ color: 'var(--muted)', fontSize: 13 }}>
-              {settings.geminiApiKey ? 'Gemini + screen agent' : 'API key needed'}
+            <h2>Aria link</h2>
+            <span className="chat-link-status">
+              {settings.geminiApiKey ? 'Gemini Live' : 'API key needed'}
             </span>
           </div>
 
           <div className="messages" ref={listRef}>
             {messages.map((m) => (
               <div key={m.id} className={`bubble ${m.role}`}>
+                <div className="bubble-who">{m.role === 'user' ? 'YOU' : m.agentName || 'ARIA'}</div>
                 {m.content}
               </div>
             ))}
-            {partial ? <div className="bubble user">{partial}…</div> : null}
-            {status === 'thinking' ? <div className="bubble system">Processing request…</div> : null}
+            {partial ? <div className="bubble user"><div className="bubble-who">YOU</div>{partial}…</div> : null}
+            {status === 'thinking' ? (
+              <div className="bubble system">
+                <div className="module-chip">Module: assign_agent · routing</div>
+                Aria routing…
+              </div>
+            ) : null}
             {status === 'working' ? (
-              <div className="bubble system">স্ক্রিন দেখে টাস্ক করছি… শেষ হলে জানাব।</div>
+              <div className="bubble system">
+                <div className="module-chip">
+                  Module: desk_{activeAgentId && activeAgentId !== 'aria' ? activeAgentId : 'screen'}
+                </div>
+                {activeAgentId && activeAgentId !== 'aria'
+                  ? `${activeAgentId} ডেস্কে কাজ চলছে…`
+                  : 'স্ক্রিন দেখে টাস্ক করছি… শেষ হলে জানাব।'}
+              </div>
             ) : null}
           </div>
 
           <form className="composer" onSubmit={onSubmit}>
-            <button
-              type="button"
-              className={`mic-btn ${status === 'listening' ? 'active' : ''}`}
-              onClick={toggleListen}
-              disabled={status === 'thinking' || status === 'working'}
-              title="Click to talk, click again to send"
-            >
-              {status === 'listening' ? 'Stop' : 'Mic'}
-            </button>
             <textarea
               value={input}
               onChange={(e) => setInput(e.target.value)}
-              placeholder='Try: "Gulshan e dentist lead generate koro" / "5 min pore Joya ke message pathao"'
+              placeholder="Type to Assistant (Gemini Live)…"
               rows={2}
               onKeyDown={(e) => {
                 if (e.key === 'Enter' && !e.shiftKey) {
@@ -463,7 +536,7 @@ export default function App() {
               type="submit"
               disabled={status === 'thinking' || status === 'working' || !input.trim()}
             >
-              Send
+              →
             </button>
           </form>
         </section>

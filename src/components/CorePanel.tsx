@@ -1,3 +1,6 @@
+import type { DeskStatus, SpecialistId } from '../lib/agents'
+import { AgentTown } from './AgentTown'
+import { OfficeFloor } from './OfficeFloor'
 import { SystemMonitor, type ScheduleItem, type SystemMetrics } from './SystemMonitor'
 
 type Props = {
@@ -8,14 +11,12 @@ type Props = {
   schedules: ScheduleItem[]
   nowMs: number
   onCancelSchedule: (id: string) => void
-}
-
-const STATUS_LABEL: Record<Props['status'], string> = {
-  idle: 'Standby',
-  listening: 'Listening',
-  thinking: 'Processing',
-  speaking: 'Speaking',
-  working: 'On task',
+  activeAgentId: SpecialistId | 'aria' | null
+  deskStatuses: Partial<Record<SpecialistId, DeskStatus>>
+  lastBrief: string
+  routingLabel: string
+  onTerminate: () => void
+  onMic: () => void
 }
 
 export function CorePanel({
@@ -26,24 +27,38 @@ export function CorePanel({
   schedules,
   nowMs,
   onCancelSchedule,
+  activeAgentId,
+  deskStatuses,
+  lastBrief,
+  routingLabel,
+  onTerminate,
+  onMic,
 }: Props) {
   return (
-    <section className="core-panel">
-      <div className="core-hero">
-        <div className="orb-wrap">
-          <div className="orb-ring" />
-          <div className={`orb ${status}`} />
-        </div>
-        <div className="core-meta">
+    <section className="core-panel command-center">
+      <div className="core-hero office-hero stonic-hero">
+        <OfficeFloor
+          userName={userName}
+          managerStatus={status}
+          activeAgentId={activeAgentId}
+          deskStatuses={deskStatuses}
+          lastBrief={lastBrief}
+          routingLabel={routingLabel}
+          onTerminate={onTerminate}
+          onMic={onMic}
+          micDisabled={status === 'thinking' || status === 'working'}
+        />
+        <div className="core-meta office-meta">
           <div>
-            <h1>ARIA</h1>
+            <h1>SYSTEM CORE</h1>
             <p>
-              {userName ? `${userName}-এর সঙ্গী` : 'Emotional desktop companion'} · {platformLabel}
+              {userName ? `${userName}'s agents` : 'Multi-agent desktop'} · {platformLabel}
             </p>
           </div>
-          <div className="status-pill">{STATUS_LABEL[status]}</div>
         </div>
       </div>
+
+      <AgentTown activeAgentId={activeAgentId} deskStatuses={deskStatuses} />
 
       <SystemMonitor
         metrics={metrics}

@@ -15,6 +15,8 @@ const APP_ALIASES: Record<string, { mac: string; win: string }> = {
   steam: { mac: 'Steam', win: 'steam' },
   vscode: { mac: 'Visual Studio Code', win: 'Code' },
   code: { mac: 'Visual Studio Code', win: 'Code' },
+  cursor: { mac: 'Cursor', win: 'Cursor' },
+  'cursor.app': { mac: 'Cursor', win: 'Cursor' },
   terminal: { mac: 'Terminal', win: 'wt' },
   finder: { mac: 'Finder', win: 'explorer' },
   explorer: { mac: 'Finder', win: 'explorer' },

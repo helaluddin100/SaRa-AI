@@ -1,3 +1,9 @@
+import {
+  ARIA_MANAGER,
+  getSpecialist,
+  type DeskStatus,
+  type SpecialistId,
+} from './agents'
 import { JARVIS_CHARACTER, splitReplyAndVoiceStyle } from './character'
 
 type GeminiPart = Record<string, unknown> & {
@@ -12,14 +18,45 @@ type GeminiContent = {
   parts: GeminiPart[]
 }
 
-const FUNCTION_DECLARATIONS = [
+type ToolDecl = {
+  name: string
+  description: string
+  parameters: Record<string, unknown>
+}
+
+export type OfficeStatusEvent = {
+  activeAgentId: SpecialistId | 'aria' | null
+  deskStatuses: Partial<Record<SpecialistId, DeskStatus>>
+  lastBrief?: string
+}
+
+const ALL_TOOL_DECLARATIONS: ToolDecl[] = [
   {
-    name: 'open_app',
-    description: 'Open an application on the user PC (Chrome, Spotify, VS Code, etc.)',
+    name: 'assign_agent',
+    description:
+      'Hand work to a specialist desk. agent_id: mira|rex|forge|pixel. brief: clear English instructions for that specialist.',
     parameters: {
       type: 'OBJECT',
       properties: {
-        app: { type: 'STRING', description: 'App name, e.g. chrome, spotify, code' },
+        agent_id: {
+          type: 'STRING',
+          description: 'mira | rex | forge | pixel',
+        },
+        brief: {
+          type: 'STRING',
+          description: 'Full task brief for the specialist',
+        },
+      },
+      required: ['agent_id', 'brief'],
+    },
+  },
+  {
+    name: 'open_app',
+    description: 'Open an application on the user PC (Chrome, Cursor, Spotify, etc.)',
+    parameters: {
+      type: 'OBJECT',
+      properties: {
+        app: { type: 'STRING', description: 'App name, e.g. chrome, Cursor, code' },
       },
       required: ['app'],
     },
@@ -59,61 +96,48 @@ const FUNCTION_DECLARATIONS = [
   },
   {
     name: 'get_system_info',
-    description: 'Get basic PC health info: RAM, CPU count, uptime. No arguments needed.',
+    description: 'Get PC health: CPU%, RAM, cores, uptime.',
     parameters: {
       type: 'OBJECT',
       properties: {
-        confirm: {
-          type: 'BOOLEAN',
-          description: 'Optional. Set true to confirm the request.',
-        },
+        confirm: { type: 'BOOLEAN', description: 'Optional confirm flag' },
       },
     },
   },
   {
     name: 'open_whatsapp',
-    description: 'Open the WhatsApp desktop app on the PC (voice command).',
+    description: 'Open the WhatsApp desktop app.',
     parameters: { type: 'OBJECT', properties: {} },
   },
   {
     name: 'send_whatsapp_message',
-    description:
-      'FULL automation: open WhatsApp, search the contact BY NAME inside WhatsApp (as saved on phone/desktop, e.g. "Joya Robi"), open chat, type the message, and press Send. Use for voice commands like "WhatsApp open kore Joya Robi ke message pathao hello". Do NOT ask for phone numbers or Settings.',
+    description: 'Open WhatsApp, find contact by name, type message, send.',
     parameters: {
       type: 'OBJECT',
       properties: {
-        contact: {
-          type: 'STRING',
-          description: 'Contact display name exactly as in WhatsApp, e.g. Joya Robi',
-        },
-        message: { type: 'STRING', description: 'Message text to send, e.g. hello joya' },
+        contact: { type: 'STRING' },
+        message: { type: 'STRING' },
       },
       required: ['contact', 'message'],
     },
   },
   {
     name: 'check_email',
-    description:
-      'Open Gmail in the already-logged-in browser and summarize visible inbox / important mail for the user.',
+    description: 'Open Gmail and summarize visible inbox.',
     parameters: { type: 'OBJECT', properties: {} },
   },
   {
     name: 'check_facebook_page',
-    description:
-      'Open Facebook Page inbox in the already-logged-in Chrome/Safari browser, read visible messages, and summarize. No API token needed.',
+    description: 'Open Facebook Page inbox and summarize messages.',
     parameters: { type: 'OBJECT', properties: {} },
   },
   {
     name: 'post_facebook_status',
-    description:
-      'PRIMARY for Facebook posts. Open logged-in Facebook in Chrome, open the create-post composer, type the status text, and click Post. Use for "Facebook e post koro", "ফেসবুকে পোস্ট করো", etc. Pass the full post text exactly as the user wants published.',
+    description: 'Post exact status text to Facebook.',
     parameters: {
       type: 'OBJECT',
       properties: {
-        text: {
-          type: 'STRING',
-          description: 'Exact Facebook status/post text to publish',
-        },
+        text: { type: 'STRING' },
       },
       required: ['text'],
     },
@@ -121,108 +145,69 @@ const FUNCTION_DECLARATIONS = [
   {
     name: 'complete_computer_task',
     description:
-      'PRIMARY tool for general on-screen PC work. Aria can SEE the user screen, break the goal into steps, click/type/hotkey, verify on screen, and report when done. Prefer post_facebook_status for Facebook posts and send_whatsapp_message for WhatsApp. Use this for other UI tasks.',
+      'Screen vision + click/type loop until a PC/UI goal is done. Forge: use to drive Cursor. Rex: PC control. Pixel: design preview work.',
     parameters: {
       type: 'OBJECT',
       properties: {
-        goal: {
-          type: 'STRING',
-          description:
-            'Full task, e.g. "Open WhatsApp, message Joya Robi saying hello joya, and confirm sent"',
-        },
+        goal: { type: 'STRING' },
       },
       required: ['goal'],
     },
   },
   {
     name: 'generate_maps_leads',
-    description:
-      'PRIMARY for lead generation. Open Google Maps, collect business leads for a search (name, rating, address, phone, website), save a CSV on the Desktop, and return the file path. Use for "Google Map e lead generate koro", dentists/restaurants/clinics in an area, etc.',
+    description: 'Google Maps lead gen → CSV on Desktop.',
     parameters: {
       type: 'OBJECT',
       properties: {
-        query: {
-          type: 'STRING',
-          description: 'What to search, e.g. dentist, restaurant, salon, digital agency',
-        },
-        location: {
-          type: 'STRING',
-          description: 'Area/city optional, e.g. Gulshan Dhaka, Banani',
-        },
-        max_results: {
-          type: 'NUMBER',
-          description: 'How many leads to collect (default 15, max 40)',
-        },
+        query: { type: 'STRING' },
+        location: { type: 'STRING' },
+        max_results: { type: 'NUMBER' },
       },
       required: ['query'],
     },
   },
   {
     name: 'schedule_task',
-    description:
-      'Schedule a future job Aria will run herself after a delay (app must stay open). Use for "5 minute pore message pathao", "10 min pore Facebook post", "20 minute pore lead generate", reminders, delayed WhatsApp/computer tasks. Convert minutes/seconds to delay fields.',
+    description: 'Schedule a delayed job (app must stay open).',
     parameters: {
       type: 'OBJECT',
       properties: {
-        title: {
-          type: 'STRING',
-          description: 'Short label, e.g. WhatsApp Joya, Maps dentist leads',
-        },
-        goal: {
-          type: 'STRING',
-          description:
-            'Full instruction Aria will execute later, e.g. "Send WhatsApp to Joya Robi: hello" or "Generate Maps leads for dentist in Gulshan"',
-        },
-        delay_minutes: {
-          type: 'NUMBER',
-          description: 'Minutes to wait before running (use for 5/10/20 minute schedules)',
-        },
-        delay_seconds: {
-          type: 'NUMBER',
-          description: 'Optional seconds delay (overrides minutes if both set carefully; prefer minutes for voice)',
-        },
-        kind: {
-          type: 'STRING',
-          description:
-            'computer_task | whatsapp | facebook_post | leads. Prefer the matching kind when clear.',
-        },
-        contact: {
-          type: 'STRING',
-          description: 'For kind=whatsapp: contact name',
-        },
-        message: {
-          type: 'STRING',
-          description: 'For kind=whatsapp or facebook_post: message/post text',
-        },
-        query: {
-          type: 'STRING',
-          description: 'For kind=leads: Maps search query',
-        },
-        location: {
-          type: 'STRING',
-          description: 'For kind=leads: optional area',
-        },
+        title: { type: 'STRING' },
+        goal: { type: 'STRING' },
+        delay_minutes: { type: 'NUMBER' },
+        delay_seconds: { type: 'NUMBER' },
+        kind: { type: 'STRING' },
+        contact: { type: 'STRING' },
+        message: { type: 'STRING' },
+        query: { type: 'STRING' },
+        location: { type: 'STRING' },
       },
       required: ['title', 'goal'],
     },
   },
   {
     name: 'list_scheduled_tasks',
-    description: 'List pending/recent scheduled jobs Aria will run.',
+    description: 'List pending/recent scheduled jobs.',
     parameters: { type: 'OBJECT', properties: {} },
   },
   {
     name: 'cancel_scheduled_task',
-    description: 'Cancel a pending scheduled task by id from list_scheduled_tasks.',
+    description: 'Cancel a pending scheduled task by id.',
     parameters: {
       type: 'OBJECT',
       properties: {
-        id: { type: 'STRING', description: 'Scheduled task id' },
+        id: { type: 'STRING' },
       },
       required: ['id'],
     },
   },
 ]
+
+function toolsFor(allowed: string[]): ToolDecl[] {
+  const set = new Set(allowed)
+  return ALL_TOOL_DECLARATIONS.filter((t) => set.has(t.name))
+}
 
 async function runTool(name: string, args: Record<string, unknown>): Promise<Record<string, unknown>> {
   switch (name) {
@@ -336,27 +321,10 @@ function extractFunctionCalls(parts: GeminiPart[] | undefined) {
     .filter((c): c is { name: string; args?: Record<string, unknown> } => Boolean(c?.name))
 }
 
-export async function askJarvis(options: {
-  apiKey: string
-  model: string
-  userName: string
-  userText: string
-  history: Array<{ role: 'user' | 'assistant'; content: string }>
-}): Promise<{ text: string; voiceStyle?: string }> {
-  const { apiKey, model, userName, userText, history } = options
-  if (!apiKey.trim()) {
-    throw new Error('Gemini API key missing. Open Settings and paste your key.')
-  }
-
-  const memory = await window.jarvis.listMemory()
-  const memoryBlock =
-    memory.length > 0
-      ? `Known facts about the user:\n${memory.map((m) => `- ${m.text}`).join('\n')}`
-      : 'No stored personal facts yet.'
-
-  const systemText = `${JARVIS_CHARACTER.systemPrompt}\n\nUser name: ${userName || 'unknown'}\n${memoryBlock}`
-
-  // Gemini requires alternating roles; collapse history safely
+function buildHistoryContents(
+  history: Array<{ role: 'user' | 'assistant'; content: string }>,
+  userText: string,
+): GeminiContent[] {
   const contents: GeminiContent[] = []
   for (const m of history.slice(-12)) {
     const role = m.role === 'assistant' ? 'model' : 'user'
@@ -367,30 +335,42 @@ export async function askJarvis(options: {
       contents.push({ role, parts: [{ text: m.content }] })
     }
   }
-
   const last = contents[contents.length - 1]
   if (last?.role === 'user') {
     last.parts.push({ text: userText })
   } else {
     contents.push({ role: 'user', parts: [{ text: userText }] })
   }
-
-  // If history somehow starts with model-only, prepend a tiny user turn
   if (contents[0]?.role === 'model') {
     contents.unshift({ role: 'user', parts: [{ text: 'Hello' }] })
   }
+  return contents
+}
 
-  for (let round = 0; round < 6; round += 1) {
+async function geminiLoop(options: {
+  apiKey: string
+  model: string
+  systemText: string
+  contents: GeminiContent[]
+  allowedTools: string[]
+  maxRounds: number
+  temperature: number
+  onTool?: (name: string) => void
+  runToolFn: (name: string, args: Record<string, unknown>) => Promise<Record<string, unknown>>
+}): Promise<string> {
+  const contents = options.contents
+  const decls = toolsFor(options.allowedTools)
+
+  for (let round = 0; round < options.maxRounds; round += 1) {
     const result = await window.jarvis.geminiGenerate({
-      apiKey,
-      model,
+      apiKey: options.apiKey,
+      model: options.model,
       body: {
-        systemInstruction: { parts: [{ text: systemText }] },
+        systemInstruction: { parts: [{ text: options.systemText }] },
         contents,
-        tools: [{ functionDeclarations: FUNCTION_DECLARATIONS }],
+        tools: decls.length ? [{ functionDeclarations: decls }] : undefined,
         generationConfig: {
-          temperature: 0.6,
-          // Gemini 3.x default thinking can hang for a long time in chat UX
+          temperature: options.temperature,
           thinkingConfig: { thinkingLevel: 'low' },
         },
       },
@@ -423,10 +403,10 @@ export async function askJarvis(options: {
     const calls = extractFunctionCalls(parts)
     if (calls.length) {
       contents.push({ role: 'model', parts })
-
       const responseParts: GeminiPart[] = []
       for (const call of calls) {
-        const toolResult = await runTool(call.name, call.args || {})
+        options.onTool?.(call.name)
+        const toolResult = await options.runToolFn(call.name, call.args || {})
         responseParts.push({
           functionResponse: {
             name: call.name,
@@ -438,10 +418,178 @@ export async function askJarvis(options: {
       continue
     }
 
-    const text = extractText(parts)
-    if (text) return splitReplyAndVoiceStyle(text)
-    return { text: 'Done.' }
+    return extractText(parts) || 'Done.'
   }
 
-  return { text: 'I hit a tool loop limit. Try again with a simpler request.' }
+  return 'Tool loop limit — try a simpler request.'
+}
+
+async function runSpecialist(options: {
+  apiKey: string
+  model: string
+  agentId: SpecialistId
+  brief: string
+  userName: string
+  memoryBlock: string
+  onOfficeStatus?: (ev: OfficeStatusEvent) => void
+}): Promise<{ ok: boolean; agentId: SpecialistId; agentName: string; summary: string }> {
+  const agent = getSpecialist(options.agentId)
+  if (!agent) {
+    return {
+      ok: false,
+      agentId: options.agentId,
+      agentName: options.agentId,
+      summary: `Unknown agent: ${options.agentId}`,
+    }
+  }
+
+  options.onOfficeStatus?.({
+    activeAgentId: agent.id as SpecialistId,
+    deskStatuses: { [agent.id]: 'thinking' },
+    lastBrief: options.brief,
+  })
+
+  const systemText = `${agent.systemPrompt}\n\nUser name: ${options.userName || 'unknown'}\n${options.memoryBlock}\n\nBrief from Aria:\n${options.brief}`
+
+  try {
+    const raw = await geminiLoop({
+      apiKey: options.apiKey,
+      model: options.model,
+      systemText,
+      contents: [{ role: 'user', parts: [{ text: options.brief }] }],
+      allowedTools: agent.allowedTools,
+      maxRounds: 6,
+      temperature: 0.4,
+      onTool: (name) => {
+        const working =
+          name === 'complete_computer_task' ||
+          name === 'generate_maps_leads' ||
+          name === 'post_facebook_status' ||
+          name === 'send_whatsapp_message'
+        options.onOfficeStatus?.({
+          activeAgentId: agent.id as SpecialistId,
+          deskStatuses: { [agent.id]: working ? 'working' : 'thinking' },
+          lastBrief: options.brief,
+        })
+      },
+      runToolFn: async (name, args) => {
+        if (!agent.allowedTools.includes(name)) {
+          return { ok: false, message: `${agent.name} cannot use tool ${name}` }
+        }
+        return runTool(name, args)
+      },
+    })
+
+    const { text } = splitReplyAndVoiceStyle(raw)
+    options.onOfficeStatus?.({
+      activeAgentId: agent.id as SpecialistId,
+      deskStatuses: { [agent.id]: 'done' },
+      lastBrief: options.brief,
+    })
+    return {
+      ok: true,
+      agentId: agent.id as SpecialistId,
+      agentName: agent.name,
+      summary: text,
+    }
+  } catch (error) {
+    const message = error instanceof Error ? error.message : String(error)
+    options.onOfficeStatus?.({
+      activeAgentId: agent.id as SpecialistId,
+      deskStatuses: { [agent.id]: 'idle' },
+    })
+    return {
+      ok: false,
+      agentId: agent.id as SpecialistId,
+      agentName: agent.name,
+      summary: message,
+    }
+  }
+}
+
+export async function askJarvis(options: {
+  apiKey: string
+  model: string
+  userName: string
+  userText: string
+  history: Array<{ role: 'user' | 'assistant'; content: string }>
+  onOfficeStatus?: (ev: OfficeStatusEvent) => void
+}): Promise<{ text: string; voiceStyle?: string; agentId?: string; agentName?: string }> {
+  const { apiKey, model, userName, userText, history, onOfficeStatus } = options
+  if (!apiKey.trim()) {
+    throw new Error('Gemini API key missing. Open Settings and paste your key.')
+  }
+
+  const memory = await window.jarvis.listMemory()
+  const memoryBlock =
+    memory.length > 0
+      ? `Known facts about the user:\n${memory.map((m) => `- ${m.text}`).join('\n')}`
+      : 'No stored personal facts yet.'
+
+  onOfficeStatus?.({
+    activeAgentId: 'aria',
+    deskStatuses: {},
+  })
+
+  const systemText = `${JARVIS_CHARACTER.systemPrompt}\n\nUser name: ${userName || 'unknown'}\n${memoryBlock}`
+  const contents = buildHistoryContents(history, userText)
+
+  let lastSpecialistId: SpecialistId | undefined
+  let lastSpecialistName: string | undefined
+
+  const raw = await geminiLoop({
+    apiKey,
+    model,
+    systemText,
+    contents,
+    allowedTools: ARIA_MANAGER.allowedTools,
+    maxRounds: 8,
+    temperature: 0.55,
+    runToolFn: async (name, args) => {
+      if (name === 'assign_agent') {
+        const agentId = String(args.agent_id || args.agentId || '')
+          .trim()
+          .toLowerCase() as SpecialistId
+        const brief = String(args.brief || '').trim()
+        if (!getSpecialist(agentId)) {
+          return { ok: false, message: `Unknown agent_id: ${agentId}. Use mira|rex|forge|pixel.` }
+        }
+        if (!brief) return { ok: false, message: 'brief required for assign_agent' }
+
+        const result = await runSpecialist({
+          apiKey,
+          model,
+          agentId,
+          brief,
+          userName,
+          memoryBlock,
+          onOfficeStatus,
+        })
+        lastSpecialistId = result.agentId
+        lastSpecialistName = result.agentName
+        return result
+      }
+
+      if (!ARIA_MANAGER.allowedTools.includes(name)) {
+        return { ok: false, message: `Aria cannot use tool ${name} — assign a specialist.` }
+      }
+      return runTool(name, args)
+    },
+  })
+
+  const idleStatuses: Partial<Record<SpecialistId, DeskStatus>> = lastSpecialistId
+    ? { [lastSpecialistId]: 'idle' }
+    : { mira: 'idle', rex: 'idle', forge: 'idle', pixel: 'idle' }
+
+  onOfficeStatus?.({
+    activeAgentId: null,
+    deskStatuses: idleStatuses,
+  })
+
+  const split = splitReplyAndVoiceStyle(raw)
+  return {
+    ...split,
+    agentId: lastSpecialistId,
+    agentName: lastSpecialistName,
+  }
 }
