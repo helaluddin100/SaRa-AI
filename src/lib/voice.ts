@@ -1,3 +1,4 @@
+import { prepareSpeechText } from './speechText'
 import { resolveVoiceRef, type VoiceRef } from './voiceCatalog'
 import { styleToProsody, textLooksBangla } from './voices'
 
@@ -44,9 +45,13 @@ export async function speak(options: SpeakOptions): Promise<void> {
   const { text, enabled = true, voiceName, voiceNameEn, voiceNameBn, voiceStyle } = options
   if (!enabled || !text.trim()) return
 
+  // Chat UI keeps raw text; voice gets cleaned speech (phones, no *()%,. etc.)
+  const speech = prepareSpeechText(text)
+  if (!speech) return
+
   await stopSpeaking()
   const { rate, pitch } = styleToProsody(voiceStyle)
-  const bangla = textLooksBangla(text)
+  const bangla = textLooksBangla(speech) || textLooksBangla(text)
   const plan = resolveVoiceRef(bangla, {
     preset: voiceName,
     voiceNameEn,
@@ -55,7 +60,7 @@ export async function speak(options: SpeakOptions): Promise<void> {
   const finalPitch = pitch * (plan.pitchBoost ?? 1)
 
   const result = await window.jarvis.speakLocal({
-    text,
+    text: speech,
     voiceId: plan.voiceId,
     rate,
     pitch: finalPitch,
@@ -67,7 +72,7 @@ export async function speak(options: SpeakOptions): Promise<void> {
 
   const fb = fallbackFor(plan, bangla)
   const second = await window.jarvis.speakLocal({
-    text,
+    text: speech,
     voiceId: fb.voiceId,
     rate,
     pitch: pitch * (fb.pitchBoost ?? 1),

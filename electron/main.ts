@@ -20,6 +20,7 @@ import { listLocalVoices, speakLocal, stopLocalSpeak } from './local-tts'
 import { getLocalDateTime, getLocalWeather } from './local-context'
 import { speakBanglaEdge } from './edge-bangla'
 import { BANGLA_VOICES, speakBanglaPiper, warmupPiperBangla } from './piper-bangla'
+import { prepareSpeechText } from './speech-text'
 import { closeApp, getSystemInfo, listKnownApps, openApp, openUrl } from './pc-control'
 import {
   cancelTask,
@@ -252,6 +253,11 @@ function registerIpc() {
       },
     ) => {
       const engine = payload.engine || 'auto'
+      // Sanitize for speech: phones digit-by-digit, skip *()%,. etc. (UI text stays raw)
+      const speechText = prepareSpeechText(payload.text || '')
+      if (!speechText) return { ok: true }
+      payload = { ...payload, text: speechText }
+
       const banglaVoice = Boolean(
         payload.voiceId?.startsWith('bn_f_') ||
           payload.voiceId?.startsWith('bn_m_') ||
