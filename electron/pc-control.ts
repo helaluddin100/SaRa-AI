@@ -51,12 +51,26 @@ export async function openApp(appName: string): Promise<{ ok: boolean; message: 
     }
 
     if (platform === 'win32') {
-      if (resolved.win.startsWith('http') || resolved.win.startsWith('ms-')) {
-        spawn('cmd', ['/c', 'start', '', resolved.win], { detached: true, stdio: 'ignore' }).unref()
+      const target = resolved.win
+      // Prefer Start-Process for .exe names; start for URLs / protocols
+      if (target.startsWith('http') || target.includes(':')) {
+        spawn('cmd', ['/c', 'start', '', target], { detached: true, stdio: 'ignore' }).unref()
       } else {
-        spawn('cmd', ['/c', 'start', '', resolved.win], { detached: true, stdio: 'ignore' }).unref()
+        try {
+          await execFileAsync(
+            'powershell.exe',
+            [
+              '-NoProfile',
+              '-Command',
+              `try { Start-Process '${target.replace(/'/g, "''")}' } catch { Start-Process cmd.exe -ArgumentList '/c','start','','${target.replace(/'/g, "''")}' }`,
+            ],
+            { windowsHide: true, timeout: 15000 },
+          )
+        } catch {
+          spawn('cmd', ['/c', 'start', '', target], { detached: true, stdio: 'ignore' }).unref()
+        }
       }
-      return { ok: true, message: `Opened ${resolved.win}` }
+      return { ok: true, message: `Opened ${target}` }
     }
 
     return { ok: false, message: `Unsupported platform: ${platform}` }
@@ -82,17 +96,32 @@ export async function closeApp(appName: string): Promise<{ ok: boolean; message:
     }
 
     if (platform === 'win32') {
-      const candidates = [
-        `${resolved.win}.exe`,
-        resolved.win,
-        'chrome.exe',
-        'Code.exe',
-        'spotify.exe',
-      ]
-      // Prefer exact process when alias exists
-      const processName = APP_ALIASES[appName.trim().toLowerCase()]
-        ? `${resolved.win}.exe`
-        : candidates[0]
+      // Map aliases / protocols → real process image names
+      const key = appName.trim().toLowerCase()
+      const processMap: Record<string, string> = {
+        chrome: 'chrome.exe',
+        'google chrome': 'chrome.exe',
+        edge: 'msedge.exe',
+        safari: 'msedge.exe',
+        firefox: 'firefox.exe',
+        spotify: 'Spotify.exe',
+        vscode: 'Code.exe',
+        code: 'Code.exe',
+        cursor: 'Cursor.exe',
+        'cursor.app': 'Cursor.exe',
+        whatsapp: 'WhatsApp.exe',
+        notepad: 'notepad.exe',
+        calculator: 'Calculator.exe',
+        terminal: 'WindowsTerminal.exe',
+        explorer: 'explorer.exe',
+      }
+      const processName =
+        processMap[key] ||
+        (resolved.win.includes(':') ? undefined : `${resolved.win.replace(/\.exe$/i, '')}.exe`)
+
+      if (!processName) {
+        return { ok: false, message: `Cannot close protocol/url target: ${resolved.win}` }
+      }
 
       await execFileAsync('taskkill', ['/IM', processName, '/F'])
       return { ok: true, message: `Closed ${processName}` }

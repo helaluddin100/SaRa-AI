@@ -25,8 +25,10 @@ function resolveEdgeVoice(voiceId?: string, preferMale = true): string {
   return preferMale ? 'bn-BD-PradeepNeural' : 'bn-BD-NabanitaNeural'
 }
 
+/** Prefer env override, then python3, then python (Windows often only has `python`). */
 function pythonBin(): string {
-  return process.env.EDGE_TTS_PYTHON || 'python3'
+  if (process.env.EDGE_TTS_PYTHON) return process.env.EDGE_TTS_PYTHON
+  return process.platform === 'win32' ? 'python' : 'python3'
 }
 
 /** Rate string for edge-tts, e.g. "-8%" slower = clearer. */
@@ -38,13 +40,71 @@ function edgeRate(rate?: number): string {
   return `${clamped >= 0 ? '+' : ''}${clamped}%`
 }
 
+function buildPythonEnv(): NodeJS.ProcessEnv {
+  const home = process.env.HOME || process.env.USERPROFILE || ''
+  const pathParts = (process.env.PATH || '').split(path.delimiter).filter(Boolean)
+
+  if (process.platform === 'darwin') {
+    for (const extra of [
+      path.join(home, 'Library/Python/3.9/bin'),
+      '/opt/homebrew/bin',
+      '/usr/local/bin',
+    ]) {
+      if (!pathParts.includes(extra)) pathParts.unshift(extra)
+    }
+  } else if (process.platform === 'win32') {
+    const local = process.env.LOCALAPPDATA || ''
+    const roaming = process.env.APPDATA || ''
+    for (const extra of [
+      path.join(local, 'Python', 'bin'),
+      path.join(roaming, 'Python', 'Python315', 'Scripts'),
+      path.join(roaming, 'Python', 'Python314', 'Scripts'),
+      path.join(roaming, 'Python', 'Python313', 'Scripts'),
+      'C:\\Python314',
+      'C:\\Python314\\Scripts',
+    ]) {
+      if (extra && !pathParts.includes(extra)) pathParts.unshift(extra)
+    }
+  }
+
+  const pythonPathParts = [process.env.PYTHONPATH || ''].filter(Boolean)
+  if (process.platform === 'darwin') {
+    pythonPathParts.unshift(path.join(home, 'Library/Python/3.9/lib/python/site-packages'))
+  }
+
+  return {
+    ...process.env,
+    PATH: pathParts.join(path.delimiter),
+    PYTHONPATH: pythonPathParts.join(path.delimiter),
+    PYTHONIOENCODING: 'utf-8',
+  }
+}
+
 function playMedia(filePath: string): Promise<void> {
   return new Promise((resolve, reject) => {
-    const child =
-      process.platform === 'darwin'
-        ? spawn('afplay', [filePath], { stdio: 'ignore' })
-        : spawn('ffplay', ['-nodisp', '-autoexit', filePath], { stdio: 'ignore' })
-    trackSpeakingProc(child as ChildProcessWithoutNullStreams)
+    let child: ChildProcessWithoutNullStreams
+    if (process.platform === 'darwin') {
+      child = spawn('afplay', [filePath], {
+        stdio: 'ignore',
+      }) as ChildProcessWithoutNullStreams
+    } else if (process.platform === 'win32') {
+      // No ffplay required — use WPF MediaPlayer (same approach as piper-bangla)
+      const safe = filePath.replace(/'/g, "''")
+      child = spawn(
+        'powershell.exe',
+        [
+          '-NoProfile',
+          '-Command',
+          `Add-Type -AssemblyName PresentationCore; $p = New-Object System.Windows.Media.MediaPlayer; $p.Open([Uri]'${safe}'); $p.Play(); Start-Sleep -Milliseconds 400; $deadline = (Get-Date).AddSeconds(120); while($p.NaturalDuration.HasTimeSpan -eq $false -and (Get-Date) -lt $deadline){ Start-Sleep -Milliseconds 50 }; if($p.NaturalDuration.HasTimeSpan){ while($p.Position -lt $p.NaturalDuration.TimeSpan -and (Get-Date) -lt $deadline){ Start-Sleep -Milliseconds 100 } }`,
+        ],
+        { stdio: 'ignore', windowsHide: true },
+      ) as ChildProcessWithoutNullStreams
+    } else {
+      child = spawn('ffplay', ['-nodisp', '-autoexit', filePath], {
+        stdio: 'ignore',
+      }) as ChildProcessWithoutNullStreams
+    }
+    trackSpeakingProc(child)
     child.on('error', reject)
     child.on('exit', (code, signal) => {
       if (signal) reject(new Error(`edge play killed (${signal})`))
@@ -52,6 +112,41 @@ function playMedia(filePath: string): Promise<void> {
       else resolve()
     })
   })
+}
+
+async function runEdgeTts(args: string[]): Promise<void> {
+  const env = buildPythonEnv()
+  const candidates =
+    process.platform === 'win32'
+      ? [pythonBin(), 'python', 'python3', 'py']
+      : [pythonBin(), 'python3', 'python']
+
+  const tried = new Set<string>()
+  let lastError: unknown
+
+  for (const bin of candidates) {
+    if (tried.has(bin)) continue
+    tried.add(bin)
+    try {
+      await execFileAsync(bin, ['-m', 'edge_tts', ...args], {
+        timeout: 45000,
+        env,
+        windowsHide: true,
+      })
+      return
+    } catch (error) {
+      lastError = error
+      const msg = error instanceof Error ? error.message : String(error)
+      // Only try next interpreter when the module / binary is missing
+      if (!/No module named edge_tts|ENOENT|not found|cannot find/i.test(msg)) {
+        throw error
+      }
+    }
+  }
+
+  throw lastError instanceof Error
+    ? lastError
+    : new Error(String(lastError || 'edge_tts failed'))
 }
 
 export async function speakBanglaEdge(options: {
@@ -69,35 +164,17 @@ export async function speakBanglaEdge(options: {
   const tmp = path.join(os.tmpdir(), `jarvis-edge-bn-${Date.now()}.mp3`)
 
   try {
-    // Prefer `python3 -m edge_tts` so PATH to user site-packages works
+    // Prefer `python -m edge_tts` so PATH to user site-packages works
     // Use --rate=-8% (one argv) — a bare "-8%" is parsed as a new flag
-    await execFileAsync(
-      pythonBin(),
-      [
-        '-m',
-        'edge_tts',
-        '--voice',
-        voice,
-        `--rate=${edgeRate(options.rate)}`,
-        '--text',
-        text,
-        '--write-media',
-        tmp,
-      ],
-      {
-        timeout: 45000,
-        env: {
-          ...process.env,
-          PATH: `${process.env.HOME}/Library/Python/3.9/bin:/opt/homebrew/bin:/usr/local/bin:${process.env.PATH || ''}`,
-          PYTHONPATH: [
-            `${process.env.HOME}/Library/Python/3.9/lib/python/site-packages`,
-            process.env.PYTHONPATH || '',
-          ]
-            .filter(Boolean)
-            .join(path.delimiter),
-        },
-      },
-    )
+    await runEdgeTts([
+      '--voice',
+      voice,
+      `--rate=${edgeRate(options.rate)}`,
+      '--text',
+      text,
+      '--write-media',
+      tmp,
+    ])
 
     if (!fs.existsSync(tmp) || fs.statSync(tmp).size < 200) {
       return { ok: false, message: 'edge-tts produced empty audio' }

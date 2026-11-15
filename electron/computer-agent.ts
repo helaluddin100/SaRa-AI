@@ -83,35 +83,40 @@ async function decideNextAction(options: {
   height: number
 }): Promise<AgentAction> {
   const metrics = getPrimaryDisplayMetrics()
-  const system = `You are Aria's computer-use brain. You SEE the user's Mac screen screenshot and must finish ONE goal by choosing the next single UI action.
+  const isWin = process.platform === 'win32'
+  const mod = isWin ? 'Ctrl' : 'Cmd'
+  const modJson = isWin ? 'control' : 'command'
+  const browserName = isWin ? 'Chrome or Edge' : 'Google Chrome'
+  const system = `You are Aria's computer-use brain. You SEE the user's ${isWin ? 'Windows' : 'Mac'} screen screenshot and must finish ONE goal by choosing the next single UI action.
 
 Rules:
 - Coordinates: x_norm and y_norm are 0–1000 relative to the screenshot (0,0 = top-left; 1000,1000 = bottom-right).
-- Prefer keyboard shortcuts when reliable (WhatsApp: Cmd+N search contact, Return, type message, Return to send).
-- For WhatsApp message goals: open/activate WhatsApp → Cmd+N → type contact name → Down/Return → type message → Return.
+- Prefer keyboard shortcuts when reliable (WhatsApp: ${mod}+N search contact, Return, type message, Return to send).
+- For WhatsApp message goals: open/activate WhatsApp → hotkey n with modifiers ["${modJson}"] → type contact name → Down/Return → type message → Return.
 - For Facebook STATUS/POST goals (critical):
   1) open_url https://www.facebook.com/ and wait until feed is visible
-  2) activate_app "Google Chrome"
+  2) activate_app "${isWin ? 'Chrome' : 'Google Chrome'}" (or Edge if Chrome missing on Windows)
   3) click the center of "What's on your mind?" / create-post chip (NOT Stories, NOT Reels)
   4) wait 1000ms, verify a dialog/textbox is open; if not, click again a bit lower on the same chip
   5) ONLY then type the EXACT post text from the goal
   6) click the blue/primary "Post" / "পোস্ট" button inside the dialog (bottom-right of composer)
   7) wait and confirm the dialog closed / post appears, then done
   Never claim done until Post was clicked and the composer dialog is gone.
-- For Facebook Page inbox: open Chrome to business.facebook.com/latest/inbox or facebook page inbox, wait, then done with what you see.
+- For Facebook Page inbox: open ${browserName} to business.facebook.com/latest/inbox or facebook page inbox, wait, then done with what you see.
 - For Gmail: open mail.google.com, wait, summarize from screenshot in done.summary.
+- On Windows use modifiers ["control"] not ["command"]. Option = alt on Windows.
 - One JSON object ONLY. No markdown.
 - If the goal is already done on screen, action=done.
 - If blocked (login wall, permission dialog), action=fail with clear Bangla+English summary.
 
 JSON schema (pick one):
 {"action":"open_app","app":"WhatsApp"}
-{"action":"activate_app","app":"Google Chrome"}
+{"action":"activate_app","app":"${isWin ? 'Chrome' : 'Google Chrome'}"}
 {"action":"open_url","url":"https://..."}
 {"action":"click","x_norm":500,"y_norm":400,"reason":"..."}
 {"action":"double_click","x_norm":500,"y_norm":400,"reason":"..."}
 {"action":"type","text":"..."}
-{"action":"hotkey","key":"n","modifiers":["command"]}
+{"action":"hotkey","key":"n","modifiers":["${modJson}"]}
 {"action":"press","key":"return"|"down"|"tab"|"escape"}
 {"action":"wait","ms":800}
 {"action":"done","summary":"what was completed"}
@@ -212,6 +217,7 @@ async function runAction(
       return { ok: r.ok, detail: r.message }
     }
     case 'hotkey': {
+      // Model may still emit macOS "command" — input-control maps command→Ctrl on Windows
       const r = await hotkey(action.key, action.modifiers || [])
       return { ok: r.ok, detail: r.message }
     }

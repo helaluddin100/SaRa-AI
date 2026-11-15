@@ -141,22 +141,51 @@ async function sendWhatsAppWindows(
   text: string,
 ): Promise<{ ok: boolean; message: string }> {
   try {
+    // Prefer Desktop app; fall back to protocol / web
     spawn('cmd', ['/c', 'start', '', 'whatsapp:'], { detached: true, stdio: 'ignore' }).unref()
-    await sleep(2000)
+    await sleep(2200)
+
+    const contactB64 = Buffer.from(contact, 'utf8').toString('base64')
+    const textB64 = Buffer.from(text, 'utf8').toString('base64')
     const ps = `
 Add-Type -AssemblyName System.Windows.Forms
-Start-Sleep -Milliseconds 400
+function Paste-Utf8([string]$b64) {
+  $bytes = [Convert]::FromBase64String($b64)
+  $t = [System.Text.Encoding]::UTF8.GetString($bytes)
+  Set-Clipboard -Value $t
+  Start-Sleep -Milliseconds 100
+  [System.Windows.Forms.SendKeys]::SendWait('^v')
+}
+# Focus WhatsApp window
+$wshell = New-Object -ComObject WScript.Shell
+$activated = $false
+Get-Process -ErrorAction SilentlyContinue | Where-Object { $_.MainWindowHandle -ne 0 } | ForEach-Object {
+  if ($_.ProcessName -match 'WhatsApp' -or $_.MainWindowTitle -match 'WhatsApp') {
+    [void]$wshell.AppActivate($_.Id)
+    $activated = $true
+  }
+}
+if (-not $activated) { [void]$wshell.AppActivate('WhatsApp') }
+Start-Sleep -Milliseconds 600
+# Ctrl+N = new chat / search (WhatsApp Desktop on Windows)
 [System.Windows.Forms.SendKeys]::SendWait('^n')
-Start-Sleep -Milliseconds 500
-[System.Windows.Forms.SendKeys]::SendWait('${contact.replace(/'/g, "''")}')
-Start-Sleep -Milliseconds 900
-[System.Windows.Forms.SendKeys]::SendWait('{ENTER}')
 Start-Sleep -Milliseconds 700
-[System.Windows.Forms.SendKeys]::SendWait('${text.replace(/'/g, "''")}')
-Start-Sleep -Milliseconds 300
+Paste-Utf8 '${contactB64}'
+Start-Sleep -Milliseconds 1000
+[System.Windows.Forms.SendKeys]::SendWait('{DOWN}')
+Start-Sleep -Milliseconds 250
 [System.Windows.Forms.SendKeys]::SendWait('{ENTER}')
+Start-Sleep -Milliseconds 800
+Paste-Utf8 '${textB64}'
+Start-Sleep -Milliseconds 400
+[System.Windows.Forms.SendKeys]::SendWait('{ENTER}')
+Write-Output 'ok'
 `
-    await execFileAsync('powershell', ['-NoProfile', '-Command', ps], { timeout: 60_000 })
+    await execFileAsync(
+      'powershell.exe',
+      ['-NoProfile', '-STA', '-ExecutionPolicy', 'Bypass', '-Command', ps],
+      { timeout: 60_000, windowsHide: true },
+    )
     return { ok: true, message: `WhatsApp-এ "${contact}"-কে মেসেজ পাঠানোর চেষ্টা করা হয়েছে।` }
   } catch (error) {
     return {
@@ -269,9 +298,17 @@ export async function postFacebookStatusInBrowser(text: string): Promise<{
   if (!body) return { ok: false, message: 'পোস্টে কী লিখব বলো।' }
 
   if (platform !== 'darwin') {
+    // Windows: open Facebook so vision computer-agent can click/type (no AppleScript JS).
+    try {
+      await openUrlInBrowser('https://www.facebook.com/')
+      await sleep(1800)
+    } catch {
+      // ignore — vision path still tries
+    }
     return {
       ok: false,
-      message: 'Facebook পোস্ট অটোমেশন আপাতত macOS Chrome-এ সাপোর্টেড।',
+      message:
+        'Windows-এ Chrome AppleScript নেই — vision/click automation দিয়ে পোস্ট হবে।',
     }
   }
 

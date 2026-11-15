@@ -301,7 +301,24 @@ function registerIpc() {
             console.log('[tts] edge-bn interrupted, skip Piya fallback')
             return { ok: true, interrupted: true }
           }
-          console.warn('[tts] edge-bn failed, trying Piya:', edge.message)
+          console.warn('[tts] edge-bn failed, trying piper-bn:', edge.message)
+          if (superseded()) return { ok: true, interrupted: true }
+          // Windows often has no macOS "Piya" voice — prefer offline Piper Bangla next
+          const piper = await speakBanglaPiper({
+            text: payload.text,
+            voiceId: payload.voiceId?.startsWith('bn_')
+              ? payload.voiceId
+              : /Nabanita|Tanishaa|bn_f_/i.test(payload.voiceId || '')
+                ? 'bn_f_10'
+                : 'bn_m_0',
+            rate: payload.rate,
+            pitch: 1,
+          })
+          if (piper.ok) {
+            console.log('[tts] piper-bn ok (edge fallback)')
+            return piper
+          }
+          console.warn('[tts] piper-bn failed, trying Piya:', piper.message)
           if (superseded()) return { ok: true, interrupted: true }
           const piya = await speakLocal({ ...payload, voiceId: 'Piya', rate: 0.92 })
           if (piya.ok) return piya

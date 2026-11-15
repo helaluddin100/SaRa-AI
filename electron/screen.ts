@@ -64,21 +64,34 @@ async function captureViaScreencapture(): Promise<ScreenShot> {
 
 async function captureViaDesktopCapturer(): Promise<ScreenShot> {
   const metrics = getPrimaryDisplayMetrics()
+  // Keep aspect ratio — wrong aspect breaks click mapping (esp. Windows)
+  const maxW = 1600
+  const maxH = 900
+  const fit = Math.min(maxW / metrics.width, maxH / metrics.height, 1)
+  const thumbW = Math.max(640, Math.round(metrics.width * fit))
+  const thumbH = Math.max(360, Math.round(metrics.height * fit))
   const sources = await desktopCapturer.getSources({
     types: ['screen'],
     thumbnailSize: {
-      width: Math.min(1280, metrics.width),
-      height: Math.min(800, metrics.height),
+      width: thumbW,
+      height: thumbH,
     },
   })
-  const primary = sources[0]
+  // Prefer primary display source when multiple monitors exist
+  const primaryBounds = metrics.bounds
+  const primary =
+    sources.find((s) => /screen 1|entire screen|display 1/i.test(s.name)) ||
+    sources[0]
   if (!primary?.thumbnail || primary.thumbnail.isEmpty()) {
     return {
       ok: false,
       message:
-        'Screen capture খালি। System Settings → Privacy → Screen Recording → Electron/Jarvis allow করো।',
+        process.platform === 'win32'
+          ? 'Screen capture খালি। Windows Settings → Privacy → Screen recording / Desktop capture allow করো, অথবা app restart করো।'
+          : 'Screen capture খালি। System Settings → Privacy → Screen Recording → Electron/Jarvis allow করো।',
     }
   }
+  void primaryBounds
   const png = primary.thumbnail.toPNG()
   const size = primary.thumbnail.getSize()
   return {
