@@ -2,8 +2,13 @@ import { contextBridge, ipcRenderer } from 'electron'
 
 export type JarvisSettings = {
   geminiApiKey: string
+  xaiApiKey: string
+  aiProvider: 'gemini' | 'grok'
   model: string
+  grokModel: string
   voiceEnabled: boolean
+  ttsProvider: 'auto' | 'grok' | 'local'
+  grokVoiceId: string
   userName: string
   voiceName: string
   voiceNameEn: string
@@ -78,6 +83,15 @@ export type JarvisAPI = {
     model: string
     body: Record<string, unknown>
   }) => Promise<{ ok: true; data: unknown } | { ok: false; status: number; error: string }>
+  xaiChat: (payload: {
+    apiKey: string
+    model: string
+    messages: Array<Record<string, unknown>>
+    tools?: Array<Record<string, unknown>>
+    temperature?: number
+    tool_choice?: 'auto' | 'none' | 'required'
+  }) => Promise<{ ok: true; data: unknown } | { ok: false; status: number; error: string }>
+  listGrokVoices: () => Promise<Array<{ voice_id: string; name: string }>>
   listLocalVoices: () => Promise<
     Array<{ id: string; name: string; lang: string; gender: 'female' | 'male' | 'unknown' }>
   >
@@ -86,7 +100,7 @@ export type JarvisAPI = {
     voiceId?: string
     rate?: number
     pitch?: number
-    engine?: 'auto' | 'kokoro' | 'piper-bn' | 'edge-bn' | 'system'
+    engine?: 'auto' | 'kokoro' | 'piper-bn' | 'edge-bn' | 'system' | 'grok'
   }) => Promise<{ ok: boolean; message?: string; interrupted?: boolean }>
   stopLocalSpeak: () => Promise<boolean>
   listKokoroVoices: () => Promise<Array<{ id: string; label: string; engine: string }>>
@@ -152,6 +166,8 @@ const api: JarvisAPI = {
   ensureScreenPermission: () => ipcRenderer.invoke('screen:ensurePermission'),
   platform: () => ipcRenderer.invoke('app:platform'),
   geminiGenerate: (payload) => ipcRenderer.invoke('gemini:generate', payload),
+  xaiChat: (payload) => ipcRenderer.invoke('xai:chat', payload),
+  listGrokVoices: () => ipcRenderer.invoke('xai:listVoices'),
   listLocalVoices: () => ipcRenderer.invoke('tts:listVoices'),
   speakLocal: (payload) => ipcRenderer.invoke('tts:speak', payload),
   stopLocalSpeak: () => ipcRenderer.invoke('tts:stop'),

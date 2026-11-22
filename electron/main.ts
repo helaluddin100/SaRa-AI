@@ -22,6 +22,7 @@ import { speakBanglaEdge } from './edge-bangla'
 import { BANGLA_VOICES, speakBanglaPiper, warmupPiperBangla } from './piper-bangla'
 import { prepareSpeechText } from './speech-text'
 import { closeApp, getSystemInfo, listKnownApps, openApp, openUrl } from './pc-control'
+import { listGrokVoices, speakWithGrokTts, xaiChatCompletions, type XaiChatPayload } from './xai'
 import {
   cancelTask,
   initScheduler,
@@ -237,6 +238,22 @@ function registerIpc() {
     return result
   })
 
+  ipcMain.handle('xai:chat', async (_e, payload: XaiChatPayload) => {
+    const started = Date.now()
+    const result = await xaiChatCompletions(payload)
+    console.log(
+      `[grok] model=${payload.model} ok=${result.ok} status=${'status' in result ? result.status : 200} ms=${Date.now() - started}`,
+    )
+    if (!result.ok) console.error('[grok] error:', result.error.slice(0, 500))
+    return result
+  })
+
+  ipcMain.handle('xai:listVoices', async () => {
+    const key = getSettings().xaiApiKey?.trim()
+    if (!key) return []
+    return listGrokVoices(key)
+  })
+
   let ttsGeneration = 0
 
   ipcMain.handle('tts:listVoices', () => listLocalVoices())
@@ -249,7 +266,7 @@ function registerIpc() {
         voiceId?: string
         rate?: number
         pitch?: number
-        engine?: 'auto' | 'kokoro' | 'piper-bn' | 'edge-bn' | 'system'
+        engine?: 'auto' | 'kokoro' | 'piper-bn' | 'edge-bn' | 'system' | 'grok'
       },
     ) => {
       const engine = payload.engine || 'auto'
@@ -258,6 +275,7 @@ function registerIpc() {
       if (!speechText) return { ok: true }
       payload = { ...payload, text: speechText }
 
+      const settings = getSettings()
       const banglaVoice = Boolean(
         payload.voiceId?.startsWith('bn_f_') ||
           payload.voiceId?.startsWith('bn_m_') ||
@@ -276,6 +294,39 @@ function registerIpc() {
       )
 
       const superseded = () => generation !== ttsGeneration
+
+      // Grok cloud TTS (supports Bangla `bn` + English)
+      const grokKey = settings.xaiApiKey?.trim()
+      const wantGrok =
+        Boolean(grokKey) &&
+        (engine === 'grok' ||
+          payload.voiceId?.startsWith('grok:') ||
+          settings.ttsProvider === 'grok' ||
+          (engine === 'auto' && settings.ttsProvider === 'auto' && settings.aiProvider === 'grok'))
+
+      if (wantGrok && grokKey) {
+        const voiceId = (payload.voiceId || '')
+          .replace(/^grok:/i, '')
+          .trim() || settings.grokVoiceId || 'ara'
+        const language = useBangla || textMostlyBangla(payload.text) ? 'bn' : 'auto'
+        const grok = await speakWithGrokTts({
+          apiKey: grokKey,
+          text: payload.text,
+          voiceId,
+          language,
+          rate: payload.rate,
+          isCurrent: () => generation === ttsGeneration,
+        })
+        if (grok.ok) {
+          console.log('[tts] grok ok')
+          return grok
+        }
+        if (grok.interrupted || superseded()) {
+          console.log('[tts] grok interrupted')
+          return { ok: true, interrupted: true }
+        }
+        console.warn('[tts] grok failed, falling back local:', grok.message)
+      }
 
       if (useBangla) {
         // Explicit offline Piya only — never steal the Edge neural path

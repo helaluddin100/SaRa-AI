@@ -17,8 +17,13 @@ import {
 
 type Settings = {
   geminiApiKey: string
+  xaiApiKey: string
+  aiProvider: 'gemini' | 'grok'
   model: string
+  grokModel: string
   voiceEnabled: boolean
+  ttsProvider: 'auto' | 'grok' | 'local'
+  grokVoiceId: string
   userName: string
   voiceName: string
   voiceNameEn: string
@@ -163,7 +168,9 @@ export default function App() {
         )
       }
 
-      if (!s.geminiApiKey) setShowSettings(true)
+      const needKey =
+        s.aiProvider === 'grok' ? !s.xaiApiKey?.trim() : !s.geminiApiKey?.trim()
+      if (needKey) setShowSettings(true)
     }
 
     boot().catch((err) => setError(String(err)))
@@ -270,7 +277,7 @@ export default function App() {
         return
       }
       if (!s.geminiApiKey.trim()) {
-        setError('Gemini API key needed for voice. Open Settings.')
+        setError('Voice mic STT still needs a Gemini API key (Settings). Chat can use Grok.')
         setShowSettings(true)
         return
       }
@@ -351,9 +358,11 @@ export default function App() {
         .filter((m) => m.role === 'user' || m.role === 'assistant')
         .map((m) => ({ role: m.role as 'user' | 'assistant', content: m.content }))
 
+      const useGrok = settings.aiProvider === 'grok'
       const reply = await askJarvis({
-        apiKey: settings.geminiApiKey,
-        model: settings.model,
+        provider: useGrok ? 'grok' : 'gemini',
+        apiKey: useGrok ? settings.xaiApiKey : settings.geminiApiKey,
+        model: useGrok ? settings.grokModel || 'grok-4-1-fast-non-reasoning' : settings.model,
         userName: settings.userName,
         userText: content,
         history,
@@ -609,7 +618,13 @@ export default function App() {
           <div className="chat-header">
             <h2>Aria link</h2>
             <span className="chat-link-status">
-              {settings.geminiApiKey ? 'Gemini Live' : 'API key needed'}
+              {settings.aiProvider === 'grok'
+                ? settings.xaiApiKey
+                  ? `Grok · ${settings.grokModel || 'live'}`
+                  : 'Grok key needed'
+                : settings.geminiApiKey
+                  ? 'Gemini Live'
+                  : 'API key needed'}
             </span>
           </div>
 
@@ -643,7 +658,11 @@ export default function App() {
             <textarea
               value={input}
               onChange={(e) => setInput(e.target.value)}
-              placeholder="Type to Assistant (Gemini Live)…"
+              placeholder={
+                settings.aiProvider === 'grok'
+                  ? 'Type to Aria (Grok)…'
+                  : 'Type to Assistant (Gemini Live)…'
+              }
               rows={2}
               onKeyDown={(e) => {
                 if (e.key === 'Enter' && !e.shiftKey) {
@@ -665,9 +684,11 @@ export default function App() {
 
       <div className="footer">
         <span>
-          {settings.voiceName === 'jarvis'
-            ? 'Male · Pradeep (বাংলা) · Daniel (EN)'
-            : 'Female · Nabanita (বাংলা) · Samantha (EN)'}
+          {settings.ttsProvider === 'grok' || settings.aiProvider === 'grok'
+            ? `Grok voice · ${settings.grokVoiceId || 'ara'}`
+            : settings.voiceName === 'jarvis'
+              ? 'Male · Pradeep (বাংলা) · Daniel (EN)'
+              : 'Female · Nabanita (বাংলা) · Samantha (EN)'}
         </span>
         <span>Auth later · Mac + Windows</span>
       </div>

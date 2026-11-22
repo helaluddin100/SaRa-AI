@@ -261,6 +261,86 @@ function toolsFor(allowed: string[]): ToolDecl[] {
   return ALL_TOOL_DECLARATIONS.filter((t) => set.has(t.name))
 }
 
+/** Convert Gemini-style tool decls → OpenAI / xAI tools */
+function toolsForOpenAi(allowed: string[]): Array<Record<string, unknown>> {
+  return toolsFor(allowed).map((t) => {
+    const params = JSON.parse(JSON.stringify(t.parameters || {})) as Record<string, unknown>
+    const lowerTypes = (node: unknown): unknown => {
+      if (!node || typeof node !== 'object') return node
+      if (Array.isArray(node)) return node.map(lowerTypes)
+      const obj = node as Record<string, unknown>
+      const out: Record<string, unknown> = {}
+      for (const [k, v] of Object.entries(obj)) {
+        if (k === 'type' && typeof v === 'string') {
+          out[k] = v.toLowerCase()
+        } else {
+          out[k] = lowerTypes(v)
+        }
+      }
+      return out
+    }
+    return {
+      type: 'function',
+      function: {
+        name: t.name,
+        description: t.description,
+        parameters: lowerTypes(params),
+      },
+    }
+  })
+}
+
+function geminiContentsToOpenAiMessages(
+  systemText: string,
+  contents: GeminiContent[],
+): Array<Record<string, unknown>> {
+  const messages: Array<Record<string, unknown>> = [
+    { role: 'system', content: systemText },
+  ]
+  for (const c of contents) {
+    const textParts = (c.parts || [])
+      .filter((p) => typeof p.text === 'string' && p.text)
+      .map((p) => p.text as string)
+    const fnCalls = extractFunctionCalls(c.parts)
+    const fnResponses = (c.parts || []).filter((p) => p.functionResponse)
+
+    if (fnCalls.length) {
+      messages.push({
+        role: 'assistant',
+        content: textParts.join('\n') || null,
+        tool_calls: fnCalls.map((call, i) => ({
+          id: `call_${i}_${call.name}`,
+          type: 'function',
+          function: {
+            name: call.name,
+            arguments: JSON.stringify(call.args || {}),
+          },
+        })),
+      })
+      continue
+    }
+
+    if (fnResponses.length) {
+      for (const part of fnResponses) {
+        const fr = part.functionResponse!
+        messages.push({
+          role: 'tool',
+          tool_call_id: `call_0_${fr.name}`,
+          content: JSON.stringify(fr.response ?? {}),
+        })
+      }
+      continue
+    }
+
+    if (!textParts.length) continue
+    messages.push({
+      role: c.role === 'model' ? 'assistant' : 'user',
+      content: textParts.join('\n'),
+    })
+  }
+  return messages
+}
+
 async function runTool(name: string, args: Record<string, unknown>): Promise<Record<string, unknown>> {
   switch (name) {
     case 'open_app':
@@ -502,7 +582,106 @@ async function geminiLoop(options: {
   return 'Tool loop limit — try a simpler request.'
 }
 
+async function grokLoop(options: {
+  apiKey: string
+  model: string
+  systemText: string
+  contents: GeminiContent[]
+  allowedTools: string[]
+  maxRounds: number
+  temperature: number
+  onTool?: (name: string) => void
+  runToolFn: (name: string, args: Record<string, unknown>) => Promise<Record<string, unknown>>
+}): Promise<string> {
+  type OaiMsg = Record<string, unknown>
+  const messages: OaiMsg[] = geminiContentsToOpenAiMessages(options.systemText, options.contents)
+  const tools = toolsForOpenAi(options.allowedTools)
+
+  for (let round = 0; round < options.maxRounds; round += 1) {
+    const result = await window.jarvis.xaiChat({
+      apiKey: options.apiKey,
+      model: options.model,
+      messages,
+      tools: tools.length ? tools : undefined,
+      temperature: options.temperature,
+      tool_choice: tools.length ? 'auto' : undefined,
+    })
+
+    if (!result.ok) {
+      throw new Error(`Grok error ${result.status}: ${result.error}`)
+    }
+
+    const data = result.data as {
+      choices?: Array<{
+        message?: {
+          content?: string | null
+          tool_calls?: Array<{
+            id: string
+            type?: string
+            function?: { name?: string; arguments?: string }
+          }>
+        }
+        finish_reason?: string
+      }>
+      error?: { message?: string }
+    }
+
+    const message = data.choices?.[0]?.message
+    if (!message) {
+      throw new Error(data.error?.message || 'Empty response from Grok')
+    }
+
+    const toolCalls = message.tool_calls || []
+    if (toolCalls.length) {
+      messages.push({
+        role: 'assistant',
+        content: message.content || null,
+        tool_calls: toolCalls,
+      })
+      for (const call of toolCalls) {
+        const name = call.function?.name || ''
+        let args: Record<string, unknown> = {}
+        try {
+          args = JSON.parse(call.function?.arguments || '{}') as Record<string, unknown>
+        } catch {
+          args = {}
+        }
+        options.onTool?.(name)
+        const toolResult = await options.runToolFn(name, args)
+        messages.push({
+          role: 'tool',
+          tool_call_id: call.id,
+          content: JSON.stringify(toolResult ?? {}),
+        })
+      }
+      continue
+    }
+
+    const text = String(message.content || '').trim()
+    return text || 'Done.'
+  }
+
+  return 'Tool loop limit — try a simpler request.'
+}
+
+async function llmLoop(options: {
+  provider: 'gemini' | 'grok'
+  apiKey: string
+  model: string
+  systemText: string
+  contents: GeminiContent[]
+  allowedTools: string[]
+  maxRounds: number
+  temperature: number
+  onTool?: (name: string) => void
+  runToolFn: (name: string, args: Record<string, unknown>) => Promise<Record<string, unknown>>
+}): Promise<string> {
+  if (options.provider === 'grok') return grokLoop(options)
+  return geminiLoop(options)
+}
+
 async function runSpecialist(options: {
+  provider: 'gemini' | 'grok'
   apiKey: string
   model: string
   agentId: SpecialistId
@@ -530,7 +709,8 @@ async function runSpecialist(options: {
   const systemText = `${agent.systemPrompt}\n\nUser name: ${options.userName || 'unknown'}\n${options.memoryBlock}\n\nBrief from Aria:\n${options.brief}`
 
   try {
-    const raw = await geminiLoop({
+    const raw = await llmLoop({
+      provider: options.provider,
       apiKey: options.apiKey,
       model: options.model,
       systemText,
@@ -586,6 +766,7 @@ async function runSpecialist(options: {
 }
 
 export async function askJarvis(options: {
+  provider?: 'gemini' | 'grok'
   apiKey: string
   model: string
   userName: string
@@ -593,9 +774,14 @@ export async function askJarvis(options: {
   history: Array<{ role: 'user' | 'assistant'; content: string }>
   onOfficeStatus?: (ev: OfficeStatusEvent) => void
 }): Promise<{ text: string; voiceStyle?: string; agentId?: string; agentName?: string }> {
+  const provider = options.provider || 'gemini'
   const { apiKey, model, userName, userText, history, onOfficeStatus } = options
   if (!apiKey.trim()) {
-    throw new Error('Gemini API key missing. Open Settings and paste your key.')
+    throw new Error(
+      provider === 'grok'
+        ? 'Grok (xAI) API key missing. Open Settings and paste your key.'
+        : 'Gemini API key missing. Open Settings and paste your key.',
+    )
   }
 
   const memory = await window.jarvis.listMemory()
@@ -643,7 +829,8 @@ export async function askJarvis(options: {
   let lastSpecialistId: SpecialistId | undefined
   let lastSpecialistName: string | undefined
 
-  const raw = await geminiLoop({
+  const raw = await llmLoop({
+    provider,
     apiKey,
     model,
     systemText,
@@ -663,6 +850,7 @@ export async function askJarvis(options: {
         if (!brief) return { ok: false, message: 'brief required for assign_agent' }
 
         const result = await runSpecialist({
+          provider,
           apiKey,
           model,
           agentId,

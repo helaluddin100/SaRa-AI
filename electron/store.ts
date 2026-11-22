@@ -53,10 +53,23 @@ export type ChatMessage = {
   at: string
 }
 
+export type AiProvider = 'gemini' | 'grok'
+export type TtsProvider = 'auto' | 'grok' | 'local'
+
 export type AppSettings = {
   geminiApiKey: string
+  /** xAI / Grok API key */
+  xaiApiKey: string
+  /** Chat brain: gemini (default legacy) | grok */
+  aiProvider: AiProvider
   model: string
+  /** Grok chat model when aiProvider=grok */
+  grokModel: string
   voiceEnabled: boolean
+  /** Prefer Grok cloud TTS when key present */
+  ttsProvider: TtsProvider
+  /** Grok TTS voice_id (eve | ara | rex | custom) */
+  grokVoiceId: string
   userName: string
   /** Preset: jarvis (male default) | aria (female) */
   voiceName: string
@@ -97,8 +110,13 @@ export type AppData = {
 const defaults: AppData = {
   settings: {
     geminiApiKey: '',
+    xaiApiKey: '',
+    aiProvider: 'grok',
     model: 'gemini-3.8-flash',
+    grokModel: 'grok-4-1-fast-non-reasoning',
     voiceEnabled: true,
+    ttsProvider: 'grok',
+    grokVoiceId: 'ara',
     userName: '',
     voiceName: 'aria',
     voiceNameEn: '',
@@ -166,10 +184,29 @@ export function getSettings(): AppSettings {
     voiceName = 'aria'
   }
 
+  const aiProvider: AiProvider =
+    raw.aiProvider === 'gemini' || raw.aiProvider === 'grok'
+      ? raw.aiProvider
+      : raw.xaiApiKey
+        ? 'grok'
+        : 'gemini'
+
+  const ttsProvider: TtsProvider =
+    raw.ttsProvider === 'grok' || raw.ttsProvider === 'local' || raw.ttsProvider === 'auto'
+      ? raw.ttsProvider
+      : raw.xaiApiKey
+        ? 'grok'
+        : 'auto'
+
   return {
     geminiApiKey: raw.geminiApiKey ?? '',
+    xaiApiKey: raw.xaiApiKey ?? '',
+    aiProvider,
     model,
+    grokModel: raw.grokModel || defaults.settings.grokModel,
     voiceEnabled: raw.voiceEnabled ?? true,
+    ttsProvider,
+    grokVoiceId: raw.grokVoiceId || defaults.settings.grokVoiceId,
     userName: raw.userName ?? '',
     voiceName,
     voiceNameEn: raw.voiceNameEn || '',

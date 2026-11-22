@@ -8,8 +8,13 @@ import {
 
 type Settings = {
   geminiApiKey: string
+  xaiApiKey: string
+  aiProvider: 'gemini' | 'grok'
   model: string
+  grokModel: string
   voiceEnabled: boolean
+  ttsProvider: 'auto' | 'grok' | 'local'
+  grokVoiceId: string
   userName: string
   voiceName: string
   voiceNameEn: string
@@ -50,6 +55,11 @@ function textToContacts(text: string): Record<string, string> {
 export function SettingsModal({ initial, onClose, onSave }: Props) {
   const [form, setForm] = useState({
     ...initial,
+    xaiApiKey: initial.xaiApiKey || '',
+    aiProvider: initial.aiProvider || (initial.xaiApiKey ? 'grok' : 'gemini'),
+    grokModel: initial.grokModel || 'grok-4-1-fast-non-reasoning',
+    ttsProvider: initial.ttsProvider || (initial.xaiApiKey ? 'grok' : 'auto'),
+    grokVoiceId: initial.grokVoiceId || 'ara',
     voiceName: initial.voiceName === 'jarvis' || initial.voiceName === 'aria' ? initial.voiceName : 'aria',
     voiceNameEn: initial.voiceNameEn || '',
     voiceNameBn: initial.voiceNameBn || '',
@@ -57,11 +67,19 @@ export function SettingsModal({ initial, onClose, onSave }: Props) {
   const [contactsText, setContactsText] = useState(() => contactsToText(initial.whatsappContacts))
   const [saving, setSaving] = useState(false)
   const [previewLang, setPreviewLang] = useState<'en' | 'bn'>('en')
+  const [grokVoices, setGrokVoices] = useState<Array<{ voice_id: string; name: string }>>([
+    { voice_id: 'eve', name: 'Eve' },
+    { voice_id: 'ara', name: 'Ara' },
+    { voice_id: 'rex', name: 'Rex' },
+  ])
 
   useEffect(() => {
     // warm lists (optional — catalog is local; IPC still available)
     void window.jarvis.listBanglaVoices().catch(() => undefined)
     void window.jarvis.listKokoroVoices().catch(() => undefined)
+    void window.jarvis.listGrokVoices?.().then((v) => {
+      if (v?.length) setGrokVoices(v)
+    }).catch(() => undefined)
   }, [])
 
   async function handleSave() {
@@ -80,8 +98,18 @@ export function SettingsModal({ initial, onClose, onSave }: Props) {
   async function previewVoice() {
     const sample =
       previewLang === 'bn'
-        ? 'হ্যালো স্যার, আমি জার্ভিস। সব সিস্টেম অপারেশনাল।'
-        : 'Good evening sir. I am Jarvis. All systems are operational.'
+        ? 'হ্যালো, আমি আরিয়া। গ্রক ভয়েস কানেক্টেড।'
+        : 'Hello, I am Aria. Grok voice is connected.'
+    if (form.ttsProvider === 'grok' || form.aiProvider === 'grok') {
+      await window.jarvis.speakLocal({
+        text: sample,
+        voiceId: form.grokVoiceId || 'ara',
+        rate: 1,
+        pitch: 1,
+        engine: 'grok',
+      })
+      return
+    }
     const plan = resolveVoiceRef(previewLang === 'bn', {
       preset: form.voiceName,
       voiceNameEn: form.voiceNameEn,
@@ -101,8 +129,7 @@ export function SettingsModal({ initial, onClose, onSave }: Props) {
       <div className="settings-panel settings-panel-wide" onClick={(e) => e.stopPropagation()}>
         <h2>Settings</h2>
         <p>
-          ইংরেজি: <b>Daniel</b>। বাংলা: <b>Edge neural Pradeep/Nabanita</b> (ফ্রি, পরিষ্কার) — অফলাইনে Piya
-          fallback।
+          Chat + voice: <b>Grok (xAI)</b> recommended. Local Edge/Kokoro fallback থাকবে।
         </p>
 
         <div className="field">
@@ -115,7 +142,50 @@ export function SettingsModal({ initial, onClose, onSave }: Props) {
         </div>
 
         <div className="field">
-          <label>Gemini API key (chat only)</label>
+          <label>AI provider</label>
+          <select
+            value={form.aiProvider}
+            onChange={(e) =>
+              setForm((s) => ({
+                ...s,
+                aiProvider: e.target.value as 'gemini' | 'grok',
+                ttsProvider:
+                  e.target.value === 'grok' ? 'grok' : s.ttsProvider === 'grok' ? 'auto' : s.ttsProvider,
+              }))
+            }
+          >
+            <option value="grok">Grok (xAI) ★</option>
+            <option value="gemini">Gemini (Google)</option>
+          </select>
+        </div>
+
+        <div className="field">
+          <label>Grok / xAI API key</label>
+          <input
+            type="password"
+            value={form.xaiApiKey}
+            onChange={(e) => setForm((s) => ({ ...s, xaiApiKey: e.target.value }))}
+            placeholder="xai-..."
+          />
+        </div>
+
+        <div className="field">
+          <label>Grok chat model</label>
+          <select
+            value={form.grokModel}
+            onChange={(e) => setForm((s) => ({ ...s, grokModel: e.target.value }))}
+          >
+            <option value="grok-4-1-fast-non-reasoning">grok-4-1-fast-non-reasoning</option>
+            <option value="grok-4-fast-non-reasoning">grok-4-fast-non-reasoning</option>
+            <option value="grok-4-fast-reasoning">grok-4-fast-reasoning</option>
+            <option value="grok-3">grok-3</option>
+            <option value="grok-3-mini">grok-3-mini</option>
+            <option value="grok-2-latest">grok-2-latest</option>
+          </select>
+        </div>
+
+        <div className="field">
+          <label>Gemini API key (optional — mic STT / vision fallback)</label>
           <input
             type="password"
             value={form.geminiApiKey}
@@ -125,7 +195,7 @@ export function SettingsModal({ initial, onClose, onSave }: Props) {
         </div>
 
         <div className="field">
-          <label>Chat model</label>
+          <label>Gemini chat model</label>
           <select
             value={form.model}
             onChange={(e) => setForm((s) => ({ ...s, model: e.target.value }))}
@@ -134,6 +204,37 @@ export function SettingsModal({ initial, onClose, onSave }: Props) {
             <option value="gemini-flash-latest">gemini-flash-latest</option>
             <option value="gemini-3-flash-preview">gemini-3-flash-preview</option>
           </select>
+        </div>
+
+        <div className="field">
+          <label>TTS provider</label>
+          <select
+            value={form.ttsProvider}
+            onChange={(e) =>
+              setForm((s) => ({ ...s, ttsProvider: e.target.value as 'auto' | 'grok' | 'local' }))
+            }
+          >
+            <option value="grok">Grok voice (cloud) ★</option>
+            <option value="auto">Auto (Grok if key, else local)</option>
+            <option value="local">Local only (Edge / Kokoro / system)</option>
+          </select>
+        </div>
+
+        <div className="field">
+          <label>Grok voice</label>
+          <select
+            value={form.grokVoiceId}
+            onChange={(e) => setForm((s) => ({ ...s, grokVoiceId: e.target.value }))}
+          >
+            {grokVoices.map((v) => (
+              <option key={v.voice_id} value={v.voice_id}>
+                {v.name || v.voice_id}
+              </option>
+            ))}
+          </select>
+          <p className="settings-hint" style={{ marginTop: 6 }}>
+            Bangla + English — Grok TTS (`bn` / `auto`). Default <b>ara</b>.
+          </p>
         </div>
 
         <div className="field-row">
